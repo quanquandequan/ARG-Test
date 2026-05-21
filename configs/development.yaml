@@ -1,0 +1,15 @@
+# Development overrides
+app:
+  debug: true
+  log_level: "DEBUG"
+
+vectordb:
+  mode: "lite"
+  uri: "/Users/panyuan/rag-pipeline/data/milvus_lite/milvus.db"
+
+llm:
+  stream: true
+
+logging:
+  json_format: false
+  level: "DEBUG"

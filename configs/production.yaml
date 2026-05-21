@@ -1,0 +1,15 @@
+# Production overrides
+app:
+  debug: false
+  log_level: "WARNING"
+
+vectordb:
+  mode: "standalone"
+  uri: "http://milvus-standalone:19530"
+
+llm:
+  stream: false
+
+logging:
+  json_format: true
+  level: "WARNING"

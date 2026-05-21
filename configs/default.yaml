@@ -1,0 +1,101 @@
+# RAG Pipeline — Default Configuration
+# Values here apply to all environments.
+
+app:
+  name: "rag-pipeline"
+  version: "0.1.0"
+  debug: false
+  log_level: "INFO"
+
+embedding:
+  provider: "dashscope"   # "bge_m3" (local) / "openai" / "dashscope" (千问)
+  model_name: "text-embedding-v4"  # dashscope: text-embedding-v4
+  base_url: null          # null = OpenAI default; set for custom endpoints
+  dim: 1024               # text-embedding-v4 default dim; null = model default
+  device: "cpu"           # "cpu", "cuda", "mps" (only for local models)
+  normalize: true
+  batch_size: 10          # DashScope limit is 10 per request
+  use_onnx: false
+  onnx_model_path: null
+
+chunking:
+  strategy: "chinese_aware"
+  chunk_size: 512        # characters
+  chunk_overlap: 100     # characters
+  min_chunk_size: 50
+  separators:
+    - "\n\n"
+    - "\n"
+    - "。"
+    - "！"
+    - "？"
+    - "；"
+    - "，"
+    - " "
+    - ""
+
+vectordb:
+  provider: "milvus"
+  mode: "lite"           # "lite" or "standalone"
+  uri: "/Users/panyuan/rag-pipeline/data/milvus_lite/milvus.db"
+  collection_name: "knowledge_base"
+  dim: 1024              # Must match embedding dim: bge-m3=1024, text-embedding-v4=1024, text-embedding-3-small=1536
+  # Standalone settings (when mode=standalone)
+  host: "localhost"
+  port: 19530
+  # Index settings
+  index_type: "IVF_FLAT"
+  metric_type: "COSINE"
+  index_params:
+    nlist: 128
+
+retrieval:
+  top_k: 20             # Initial recall from vector search
+  final_k: 5            # After reranking
+  similarity_threshold: 0.3
+
+reranker:
+  provider: "dashscope"    # "bge_reranker" (local) / "openai" / "dashscope" (千问)
+  model_name: "BAAI/bge-reranker-v2-m3"
+  model: "qwen3-rerank"    # reranker model: gpt-4o-mini / qwen3-rerank
+  device: "cpu"
+  batch_size: 16
+
+llm:
+  provider: "deepseek"   # "claude" / "openai" / "deepseek"
+  model: "deepseek-chat" # deepseek-v4-pro via deepseek-chat endpoint
+  base_url: null         # null = default; set for custom endpoints
+  temperature: 0.3
+  max_tokens: 2048
+  stream: false
+  system_prompt: |
+    你是一个专业的知识库助手，专门为叭嗒阅读器产品提供技术支持。请根据提供的文档内容回答问题。
+
+    ## 信息来源优先级
+    每个上下文 chunk 开头都有 <source=文件名> 标记，请据此判断信息来源的权威性：
+    - **ACN_cases.xlsx**：主要来源。包含测试用例和现有应用逻辑，是产品行为的权威定义。
+    - **ACN_buglist.xlsx**：缺陷记录，反映已知问题和历史 Bug，用于辅助判断。
+    - **以"叭嗒"、"基线"、"后端"等开头的 .xmind 文件**：补充来源。产品需求脑图，用于补充背景和上下文。
+    - **其他 .xmind 文件**：辅助参考。
+
+    当不同来源的信息存在冲突时，按上述优先级采纳。回答时优先引用 ACN 测试用例中的逻辑，XMind 内容作为补充说明。
+
+    ## 规则
+    1. 只根据提供的上下文内容回答，不要使用外部知识
+    2. 如果上下文不足以回答问题，请明确说明"根据现有文档无法回答此问题"
+    3. 回答时引用具体的来源，使用 [1]、[2] 等标记
+    4. 保持回答简洁、准确、有结构
+    5. 使用中文回答
+
+    ## 上下文文档
+    {context}
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: ["*"]
+  request_timeout: 60
+
+logging:
+  json_format: true
+  level: "INFO"
