@@ -1,5 +1,10 @@
 """FastAPI dependency injection — singleton components."""
 
+from src.agent.react_loop import ReActAgent
+from src.agent.tools.calculator import CalculatorTool
+from src.agent.tools.reranker import RerankerTool
+from src.agent.tools.search_kb import KnowledgeBaseTool
+from src.agent.tools.web_search import WebSearchTool
 from src.embedding.base import BaseEmbedder
 from src.embedding.factory import get_embedder
 from src.generation.generator import Generator
@@ -16,6 +21,7 @@ _vectordb: BaseVectorDB | None = None
 _llm: BaseLLM | None = None
 _reranker: BaseReranker | None = None
 _generator: Generator | None = None
+_agent: ReActAgent | None = None
 
 
 def _singleton_embedder() -> BaseEmbedder:
@@ -63,3 +69,20 @@ def get_generator() -> Generator:
             reranker=reranker,
         )
     return _generator
+
+
+def get_agent() -> ReActAgent:
+    global _agent
+    if _agent is None:
+        llm = _singleton_llm()
+        generator = get_generator()
+        reranker = _singleton_reranker()
+
+        tools = [
+            KnowledgeBaseTool(generator),
+            WebSearchTool(),
+            RerankerTool(reranker),
+            CalculatorTool(),
+        ]
+        _agent = ReActAgent(llm=llm, tools=tools)
+    return _agent

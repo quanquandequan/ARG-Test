@@ -37,7 +37,7 @@ chunking:
 vectordb:
   provider: "milvus"
   mode: "lite"           # "lite" or "standalone"
-  uri: "/Users/panyuan/rag-pipeline/data/milvus_lite/milvus.db"
+  uri: "./data/milvus_lite/milvus.db"  # relative to project root; override via env-specific config
   collection_name: "knowledge_base"
   dim: 1024              # Must match embedding dim: bge-m3=1024, text-embedding-v4=1024, text-embedding-3-small=1536
   # Standalone settings (when mode=standalone)

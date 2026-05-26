@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
+from src.llm.types import ChatResponse, ContentBlock, Message
+
 
 @dataclass
 class LLMResponse:
@@ -13,6 +15,8 @@ class LLMResponse:
 
 
 class BaseLLM(ABC):
+    # ── 单轮接口 (保留，Generator 仍在使用) ──
+
     @abstractmethod
     async def generate(
         self,
@@ -31,4 +35,28 @@ class BaseLLM(ABC):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
+        ...
+
+    # ── 多轮 / Agent 接口 ──
+
+    @abstractmethod
+    async def generate_chat(
+        self,
+        messages: list[Message],
+        tools: list[dict] | None = None,
+        tool_choice: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ChatResponse:
+        ...
+
+    @abstractmethod
+    async def generate_chat_stream(
+        self,
+        messages: list[Message],
+        tools: list[dict] | None = None,
+        tool_choice: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[ContentBlock]:
         ...

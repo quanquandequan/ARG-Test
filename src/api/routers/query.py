@@ -1,48 +1,59 @@
-"""Query endpoints — RAG Q&A and streaming."""
+"""Query endpoints — Agent-based RAG Q&A and streaming."""
+
+import json
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from src.api.dependencies import get_generator
-from src.api.schemas.query import QueryRequest, QueryResponse
+from src.api.dependencies import get_agent
+from src.api.schemas.query import AgentStepOut, QueryRequest, QueryResponse
+from src.llm.types import Message
 
 router = APIRouter(tags=["query"])
 
 
 @router.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest):
-    gen = get_generator()
-    result = await gen.query(
+    agent = get_agent()
+
+    history = None
+    if req.history:
+        history = [Message(role=m.role, content=m.content) for m in req.history]
+
+    result = await agent.run(
         query=req.query,
-        top_k=req.top_k,
-        filters=req.filters,
+        history=history,
     )
+
+    steps_out = [
+        AgentStepOut(
+            step_index=s.step_index,
+            tool_name=s.tool_call.name if s.tool_call else "",
+            tool_arguments=s.tool_call.arguments if s.tool_call else None,
+            tool_result=s.tool_result[:500] if s.tool_result else "",
+            thinking=s.thinking,
+        )
+        for s in result.steps
+    ]
+
     return QueryResponse(
         answer=result.answer,
-        citations=[
-            {
-                "text": c.text,
-                "document_id": c.document_id,
-                "source_path": c.source_path,
-                "chunk_index": c.chunk_index,
-                "relevance_score": c.relevance_score,
-            }
-            for c in result.citations
-        ],
+        citations=result.citations,
+        iterations=result.iterations,
+        steps=steps_out,
     )
 
 
 @router.post("/query/stream")
 async def query_stream(req: QueryRequest):
-    gen = get_generator()
+    agent = get_agent()
+
+    history = None
+    if req.history:
+        history = [Message(role=m.role, content=m.content) for m in req.history]
 
     async def event_stream():
-        async for token in gen.query_stream(
-            query=req.query,
-            top_k=req.top_k,
-            filters=req.filters,
-        ):
-            yield f"data: {token}\n\n"
-        yield "data: [DONE]\n\n"
+        async for event in agent.run_stream(query=req.query, history=history):
+            yield event
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

@@ -5,7 +5,7 @@ app:
 
 vectordb:
   mode: "lite"
-  uri: "/Users/panyuan/rag-pipeline/data/milvus_lite/milvus.db"
+  uri: "./data/milvus_lite/milvus.db"
 
 llm:
   stream: true

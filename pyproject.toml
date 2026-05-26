@@ -51,3 +51,8 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: needs a running Milvus instance",
+    "e2e: needs real models, API keys, or external services",
+    "slow: longer-running tests (>2s)",
+]
