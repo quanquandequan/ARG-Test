@@ -17,7 +17,7 @@ class KnowledgeBaseTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "search_kb"
+        return "knowledge_search"
 
     @property
     def description(self) -> str:
@@ -49,12 +49,13 @@ class KnowledgeBaseTool(BaseTool):
         }
 
     async def execute(self, query: str = "", top_k: int = 5, filters: dict | None = None, **kwargs) -> str:
-        result = await self._generator.query(query=query, final_k=top_k, filters=filters)
-        if not result.citations:
+        results = await self._generator.search(query=query, top_k=20, final_k=top_k, filters=filters)
+        if not results:
             return "未找到相关文档。"
 
-        lines: list[str] = [f"找到 {len(result.citations)} 个相关文档片段：\n"]
-        for i, c in enumerate(result.citations, start=1):
-            source = c.source_path or "unknown"
-            lines.append(f"[{i}] (来源: {source}, 相关度: {c.relevance_score:.2f})\n{c.text}")
+        lines: list[str] = [f"找到 {len(results)} 个相关文档片段：\n"]
+        for i, r in enumerate(results, start=1):
+            source = r.document_id or "unknown"
+            score = r.score
+            lines.append(f"[{i}] (来源: {source}, 相关度: {score:.2f})\n{r.content}")
         return "\n\n".join(lines)

@@ -94,6 +94,20 @@ class Generator:
         )
         return reranked
 
+    async def search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        final_k: int | None = None,
+        filters: dict | None = None,
+    ) -> list[SearchResult]:
+        """Run retrieve → rerank and return ranked chunks (no LLM generation)."""
+        cfg = get_config().get("retrieval", {})
+        stages: dict[str, float] = {}
+        return await self._retrieve_and_rerank(
+            query, top_k or cfg.get("top_k", 20), final_k or cfg.get("final_k", 5), filters, stages
+        )
+
     async def query(
         self,
         query: str,

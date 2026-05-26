@@ -13,9 +13,50 @@ Usage:
 
 from __future__ import annotations
 
+# -- Suppress C++ gRPC stderr noise via fd-level redirect ----------
+# gRPC C++ core writes GOAWAY / too_many_pings directly to stderr,
+# bypassing Python logging & env vars.  We dup2 stderr through a
+# pipe and spawn a daemon thread to filter the noise.
+import os as _os
+import sys as _sys
+import threading as _threading
+import re as _re
+
+_orig_stderr_fd = _os.dup(2)
+_rfd, _wfd = _os.pipe()
+_os.dup2(_wfd, 2)
+_os.close(_wfd)
+
+_GRPC_NOISE = _re.compile(
+    rb"(?:GOAWAY|too_many_pings|chttp2_transport\.cc|grpc_init)"
+)
+
+
+def _stderr_filter():
+    try:
+        while True:
+            chunk = _os.read(_rfd, 65536)
+            if not chunk:
+                break
+            clean = b"\n".join(
+                line
+                for line in chunk.split(b"\n")
+                if line.strip() and not _GRPC_NOISE.search(line)
+            )
+            if clean:
+                _os.write(_orig_stderr_fd, clean + b"\n")
+    except OSError:
+        pass
+
+
+_threading.Thread(target=_stderr_filter, daemon=True).start()
+del _re, _threading, _rfd, _wfd
+# -----------------------------------------------------------------
+
 import argparse
 import asyncio
 import os
+import readline  # noqa: F401 — init readline/libedit for proper CJK backspace handling
 import sys
 from pathlib import Path
 
@@ -23,6 +64,56 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Ensure project root is on sys.path for both `python -m src.agent.cli` and `pip install -e`
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+
+def _display_width(s: str) -> int:
+    """Return display width: CJK chars = 2, ASCII = 1."""
+    import unicodedata
+    w = 0
+    for c in s:
+        w += 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+    return w
+
+
+def _format_answer(text: str) -> str:
+    """Re-align markdown tables for terminal display (CJK-aware)."""
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith("|") and stripped.count("|") >= 2:
+            rows: list[list[str]] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                cells = [c.strip() for c in lines[i].strip().split("|")]
+                if cells and cells[0] == "":
+                    cells = cells[1:]
+                if cells and cells[-1] == "":
+                    cells = cells[:-1]
+                rows.append(cells)
+                i += 1
+
+            if not rows:
+                continue
+
+            ncols = max(len(r) for r in rows)
+            widths = [0] * ncols
+            for row in rows:
+                for ci, cell in enumerate(row):
+                    if ci < ncols:
+                        widths[ci] = max(widths[ci], _display_width(cell))
+
+            for row in rows:
+                padded = []
+                for ci in range(ncols):
+                    cell = row[ci] if ci < len(row) else ""
+                    pad = widths[ci] - _display_width(cell)
+                    padded.append(cell + " " * pad)
+                out.append("| " + " | ".join(padded) + " |")
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out)
 
 
 def _load_dotenv():
@@ -62,7 +153,7 @@ async def _run_query(args):
                 text = event[data_start:data_end]
                 print(text, end="", flush=True)
             elif "event: tool_call" in event and args.verbose:
-                print(f"\n🔧 {event.strip()}", file=sys.stderr)
+                print(f"\n  [TOOL] {event.strip()}", file=sys.stderr)
         print()
     else:
         result = await agent.run(query=args.query)
@@ -70,18 +161,18 @@ async def _run_query(args):
         if args.verbose:
             print(f"  ({result.iterations} 次迭代)\n")
 
-        print(result.answer)
+        print(_format_answer(result.answer))
 
         if args.verbose and result.steps:
             print()
             for s in result.steps:
                 if s.tool_call:
-                    print(f"  📎 [{s.step_index}] {s.tool_call.name}({s.tool_call.arguments})")
+                    print(f"  [CALL] [{s.step_index}] {s.tool_call.name}({s.tool_call.arguments})")
                 else:
-                    print(f"  💬 [{s.step_index}] 思考 → 回答")
+                    print(f"  [THINK] [{s.step_index}] think -> answer")
 
         if result.citations:
-            print(f"\n  📌 引用: {[c['index'] for c in result.citations]}")
+            print(f"\n  [CITE] {[c['index'] for c in result.citations]}")
 
 
 async def _run_chat(args):
@@ -100,15 +191,15 @@ async def _run_chat(args):
 
     while True:
         try:
-            query = input("👤 你: ").strip()
+            query = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n拜拜 👋")
+            print("\nBye!")
             break
 
         if not query:
             continue
         if query == "/quit":
-            print("拜拜 👋")
+            print("Bye!")
             break
         if query == "/clear":
             history.clear()
@@ -116,7 +207,7 @@ async def _run_chat(args):
             continue
 
         if args.stream:
-            print("🤖 Agent: ", end="", flush=True)
+            print("Agent: ", end="", flush=True)
             async for event in agent.run_stream(query=query, history=history):
                 if "event: answer" in event:
                     data_start = event.index('"text": "') + 9
@@ -124,15 +215,19 @@ async def _run_chat(args):
                     text = event[data_start:data_end]
                     print(text, end="", flush=True)
                 elif "event: tool_call" in event and args.verbose:
-                    print(f"\n   🔧 {event.strip()}", file=sys.stderr)
+                    print(f"\n   [TOOL] {event.strip()}", file=sys.stderr)
             print()
         else:
             result = await agent.run(query=query, history=history)
             if args.verbose and result.steps:
                 for s in result.steps:
                     if s.tool_call:
-                        print(f"   🔧 {s.tool_call.name}({s.tool_call.arguments})")
-            print(f"🤖 Agent: {result.answer}")
+                        print(f"   [TOOL] {s.tool_call.name}({s.tool_call.arguments})")
+            formatted = _format_answer(result.answer)
+            if formatted.startswith("|"):
+                print(f"Agent:\n{formatted}")
+            else:
+                print(f"Agent: {formatted}")
 
         # Update history
         history.append(Message(role="user", content=query))

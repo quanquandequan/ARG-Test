@@ -8,8 +8,6 @@ from fastapi.testclient import TestClient
 
 import src.api.dependencies as deps
 from src.agent.react_loop import ReActAgent
-from src.agent.tools.calculator import CalculatorTool
-from src.agent.tools.reranker import RerankerTool
 from src.agent.tools.search_kb import KnowledgeBaseTool
 from src.agent.tools.web_search import WebSearchTool
 from src.api.routers import health, ingestion, query
@@ -39,8 +37,6 @@ def wired_singletons(fake_embedder, fake_vectordb, fake_llm, fake_reranker, monk
     tools = [
         KnowledgeBaseTool(generator),
         WebSearchTool(),
-        RerankerTool(fake_reranker),
-        CalculatorTool(),
     ]
     agent = ReActAgent(llm=fake_llm, tools=tools)
     monkeypatch.setattr(deps, "_agent", agent, raising=False)

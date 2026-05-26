@@ -1,8 +1,6 @@
 """FastAPI dependency injection — singleton components."""
 
 from src.agent.react_loop import ReActAgent
-from src.agent.tools.calculator import CalculatorTool
-from src.agent.tools.reranker import RerankerTool
 from src.agent.tools.search_kb import KnowledgeBaseTool
 from src.agent.tools.web_search import WebSearchTool
 from src.embedding.base import BaseEmbedder
@@ -81,8 +79,6 @@ def get_agent() -> ReActAgent:
         tools = [
             KnowledgeBaseTool(generator),
             WebSearchTool(),
-            RerankerTool(reranker),
-            CalculatorTool(),
         ]
         _agent = ReActAgent(llm=llm, tools=tools)
     return _agent
