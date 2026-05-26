@@ -56,13 +56,11 @@ def get_generator() -> Generator:
     if _generator is None:
         embedder = _singleton_embedder()
         vectordb = _singleton_vectordb()
-        llm = _singleton_llm()
         reranker = _singleton_reranker()
         retriever = DenseRetriever(embedder, vectordb)
         _generator = Generator(
             embedder=embedder,
             vectordb=vectordb,
-            llm=llm,
             retriever=retriever,
             reranker=reranker,
         )

@@ -27,7 +27,6 @@ def wired_singletons(fake_embedder, fake_vectordb, fake_llm, fake_reranker, monk
     generator = Generator(
         embedder=fake_embedder,
         vectordb=fake_vectordb,
-        llm=fake_llm,
         retriever=retriever,
         reranker=fake_reranker,
     )
