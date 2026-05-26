@@ -41,6 +41,16 @@ dev = [
 onnx = ["onnxruntime>=1.18"]
 gpu = ["onnxruntime-gpu>=1.18"]
 
+[project.scripts]
+rag = "src.agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*"]
+
+[tool.setuptools.package-dir]
+"" = "."
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
