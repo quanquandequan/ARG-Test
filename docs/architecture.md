@@ -2,105 +2,264 @@
 
 ## Overview
 
-RAG Pipeline is a production-grade **Agentic** retrieval-augmented generation system for enterprise knowledge base Q&A, optimized for Chinese documents.
+**RAG Pipeline** is a production-grade **Agentic** RAG system for enterprise knowledge base Q&A, optimised for Chinese documents.
 
-The system is built around a **ReAct Agent** that drives the full reasoning loop. RAG retrieval is exposed as a **tool** the Agent can call — not a hardwired pipeline.
+The architecture has two main layers:
 
-## Agent Architecture
+1. **Ingestion** — documents are cleaned, chunked, embedded, and stored in Milvus.
+2. **Agent** — a ReAct loop that drives multi-step reasoning; RAG retrieval is one callable *tool*.
 
-```
-User Query
-    │
-    ▼
-ReActAgent  ── Think → Act → Observe (up to max_iterations) ──▶  Final Answer
-    │
-    ├── KnowledgeBaseTool ──▶ Generator (embed → ANN search → rerank) ──▶ Milvus
-    │
-    └── WebSearchTool ──▶ External search (best-effort fallback)
-    │
-    ▼
-LLM Provider  (Claude / OpenAI / DeepSeek — unified tool-calling interface)
-```
+---
 
-## Document Ingestion (unchanged)
+## High-Level Diagram
 
 ```
-Loader → Cleaner → ChineseChunker → Embedding → Milvus
+┌─────────────────────────── User ───────────────────────────────┐
+│  REST /query (JSON)           REST /query/stream (SSE)         │
+│  CLI: rag ask "…"             CLI: rag ask -s "…"              │
+└───────────────────────────────┬────────────────────────────────┘
+                                │  QueryRequest + trace_id
+                                ▼
+┌─────────────────────── FastAPI Layer ──────────────────────────┐
+│  POST /query          →  agent.run(query, history, trace_id)   │
+│  POST /query/stream   →  agent.run_stream(...)                 │
+└───────────────────────────────┬────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────── ReActAgent ────────────────────────────┐
+│                                                                │
+│  ┌─ Think ─────────────────────────────────────────────────┐  │
+│  │  LLM.generate_chat(messages, tools, tool_choice)        │  │
+│  │  ← ChatResponse { content, stop_reason, tool_calls }    │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│           │ stop_reason == "tool_use"?                         │
+│      Yes  ▼                                    No ▼            │
+│  ┌─ Act ───────────────────┐          ┌─ Answer ────────────┐  │
+│  │  asyncio.gather(        │          │  extract_citations  │  │
+│  │    tool1.execute(),     │          │  return AgentResult │  │
+│  │    tool2.execute(), …   │          └────────────────────┘  │
+│  │  ) — concurrent         │                                  │
+│  └─────────┬───────────────┘                                  │
+│            │                                                  │
+│  ┌─ Observe ────────────────────────────────────────────────┐  │
+│  │  Append tool results to messages; repeat up to N iters   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                │
+│  History sliding-window truncation (token budget):            │
+│    keep_last=4 unconditional + fill backwards to max_tokens   │
+│                                                                │
+│  Observability:                                               │
+│    • trace_id  (UUID, client-passable, attached to all logs)  │
+│    • per-step duration_ms  (LLM + tool wall-clock)            │
+│    • processing_stages  { "iter0.knowledge_search": 82.4,     │
+│                            "total": 1204.1 }                  │
+└────────────────────────────────────────────────────────────────┘
+         │                         │
+         ▼                         ▼
+┌── KnowledgeBaseTool ──┐  ┌── WebSearchTool ────────────────┐
+│  RetrievalEngine      │  │  DuckDuckGo HTML scrape         │
+│  embed → ANN search   │  │  BEST-EFFORT — not a stable API  │
+│    (top-20)           │  │  Replace with Serper / Brave     │
+│  → rerank (top-5)     │  │  for production reliability      │
+│  → SearchResult[]     │  └─────────────────────────────────┘
+└──────────┬────────────┘
+           │
+           ▼
+    Milvus vector store
+    (Lite for dev / Standalone for prod)
 ```
 
-## Components
+---
 
-### Agent Layer (`src/agent/`)
+## Agent Tool Protocol
 
-| Class | Role |
-|-------|------|
-| `ReActAgent` | ReAct Think→Act→Observe loop; concurrent tool execution via `asyncio.gather` |
-| `ToolRegistry` | Register / lookup tools; emit JSON Schema for LLM function-calling |
-| `KnowledgeBaseTool` | Wraps `Generator.search()` — retrieves and formats ranked chunks |
-| `WebSearchTool` | Best-effort DuckDuckGo HTML scraping (external fallback) |
-| `BaseTool` | Abstract interface — `name`, `description`, `parameters` (JSON Schema), `execute()` |
+Every tool implements `BaseTool`:
 
-Agent configuration lives in **`configs/default.yaml`** under `agent:`:
+```python
+class BaseTool(ABC):
+    @property
+    def name(self) -> str: ...         # must be unique
+
+    @property
+    def description(self) -> str: ... # shown to LLM
+
+    @property
+    def parameters(self) -> dict: ... # JSON Schema (OpenAI function-call format)
+
+    async def execute(self, **kwargs) -> str: ...
+
+    def to_tool_schema(self) -> dict:
+        return {"name": ..., "description": ..., "parameters": ...}
+```
+
+`ToolRegistry.definitions()` returns the schema list; each LLM provider converts it to its own wire format (`_tools_to_anthropic` / `_tools_to_openai`).
+
+Tool list is **config-driven** — add or remove tools in `configs/default.yaml` without touching code:
+
+```yaml
+agent:
+  tools:
+    - knowledge_search   # KnowledgeBaseTool
+    - web_search         # WebSearchTool (best-effort)
+```
+
+---
+
+## ReAct Loop Detail
+
+```
+Iteration i:
+  1. generate_chat(messages, tool_defs) → response
+  2. if response.stop_reason == "tool_use":
+       asyncio.gather(tool1.execute(), tool2.execute(), …)  ← concurrent
+       append tool results → messages
+       continue to iteration i+1
+  3. else:
+       extract [N] citations from response.content
+       return AgentResult(answer, steps, citations, processing_stages, trace_id)
+
+If max_iterations reached:
+  force one final generate_chat without tools → summarise
+```
+
+SSE events emitted by `run_stream`:
+
+| Event | Payload | When |
+|-------|---------|------|
+| `start` | `{trace_id}` | Before first LLM call |
+| `tool_call` | `{tools[], iteration}` | Each time LLM calls tools |
+| `tool_result` | `{tool, result_len, duration_ms}` | After each tool returns |
+| `token` | `{text}` | Streaming final answer, per token |
+| `answer` | `{text}` | Full consolidated answer |
+
+---
+
+## Retrieval Engine
+
+`RetrievalEngine.search(query, top_k, final_k, filters)`:
+
+```
+query ──► Embedder.embed_query() ──► DenseRetriever.retrieve(top_k=20)
+                                          │
+                                          ▼
+                                   Milvus cosine ANN
+                                          │
+                                          ▼
+                                   BaseReranker.rerank(top_k=5)
+                                          │
+                                          ▼
+                                   list[SearchResult]
+```
+
+LLM generation is **not** done here; that is the Agent's responsibility.
+
+---
+
+## LLM Providers
+
+| Provider | Class | Features |
+|----------|-------|---------|
+| Anthropic Claude | `ClaudeProvider` | `generate_chat`, `generate_chat_stream`, tool-calling |
+| OpenAI / DeepSeek / DashScope | `OpenAIProvider` | same interface, `base_url` configurable |
+
+Message conversion is handled inside each provider (`_messages_to_anthropic`, `_messages_to_openai`, etc.) and is covered by `tests/llm/test_message_conversion.py`.
+
+---
+
+## History Truncation
+
+`src/agent/history.py::truncate_history(history, max_tokens, keep_last)`:
+
+1. Always keep the last `keep_last=4` messages unconditionally.
+2. Fill backwards from the oldest of the remaining slice while the cumulative token estimate (`len(content) / 2.5`) stays below `max_tokens` (default 4 000).
+3. System prompt and the current user query are added by the caller — they are **not** in `history`.
+
+---
+
+## Document Ingestion
+
+```
+DocumentLoader   (PDF / MD / TXT / XLSX / XMind)
+      │
+      ▼
+TextCleaner      (NFKC, fullwidth→halfwidth, Chinese quote normalisation)
+      │
+      ▼
+ChineseChunker   (jieba sentence boundary, chunk_size, overlap)
+      │
+      ▼
+Embedder.embed_documents()
+      │
+      ▼
+MilvusStore.insert()
+```
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/query` | Agent Q&A; returns `answer`, `citations`, `steps`, `processing_stages`, `trace_id` |
+| `POST` | `/query/stream` | SSE streaming (see events table above) |
+| `POST` | `/documents/ingest` | Upload and index a document |
+| `DELETE` | `/documents/{id}` | Remove all chunks for a document |
+| `GET` | `/health` | Liveness |
+| `GET` | `/health/ready` | Readiness (embedder + vectordb + reranker + llm) |
+
+---
+
+## CLI
+
+```bash
+rag ask "你的问题"              # Non-streaming query
+rag ask -s "你的问题"           # Streaming (token-by-token)
+rag ask -v "你的问题"           # Verbose: show trace_id, tool calls, timing
+rag chat                        # Interactive multi-turn chat
+rag chat -v                     # Interactive + verbose
+rag --env production ask "..."  # Use production config
+```
+
+---
+
+## Configuration
+
+All runtime behaviour is controlled by `configs/default.yaml` (override per environment):
 
 ```yaml
 agent:
   max_iterations: 10
+  max_history_tokens: 4000    # sliding-window token budget
+  tools:
+    - knowledge_search
+    - web_search
   system_prompt: |
-    ...
+    …
+
+retrieval:
+  top_k: 20    # ANN candidates
+  final_k: 5   # after reranking
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  temperature: 0.3
+  max_tokens: 2048
 ```
 
-### Retrieval Engine (`src/generation/generator.py`)
-
-`Generator.search()` = embed query → ANN search (top-20) → cross-encoder rerank (top-5) → `list[SearchResult]`
-
-It does **not** call the LLM; generation is entirely the Agent's responsibility.
-
-### LLM Providers (`src/llm/`)
-
-- **ClaudeProvider** — Anthropic SDK, full tool-calling support
-- **OpenAIProvider** — OpenAI-compatible (OpenAI, DeepSeek, DashScope), tool-calling support
-
-Both implement `BaseLLM.generate_chat(messages, tools, tool_choice)` → `ChatResponse`.
-Internal message format (`Message`, `ToolCall`, `ChatResponse`, `ContentBlock`) is provider-agnostic; each provider handles serialisation to its own API format.
-
-### Ingestion (`src/ingestion/`)
-
-- **DocumentLoader** — dispatches by extension (PDF / Markdown / Text / XLSX / XMind)
-- **TextCleaner** — NFKC normalization, fullwidth→halfwidth, Chinese quote normalization
-- **ChineseChunker** — jieba sentence-boundary detection, overlap, no mid-sentence splits
-
-### Embedding & Vector DB
-
-- **OpenAIEmbedder** / **BgeM3Embedder** — pluggable via `embedding.provider` config
-- **MilvusStore** — Lite (zero-config dev) or Standalone (production); same SDK API
-
-### API (`src/api/`)
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /query` | Agent Q&A — returns `answer`, `citations`, `iterations`, `steps` |
-| `POST /query/stream` | SSE streaming: `tool_call` / `tool_result` / `answer` events |
-| `POST /documents/ingest` | Upload and index a document |
-| `DELETE /documents/{id}` | Remove all chunks for a document |
-| `GET /health` | Liveness probe |
-| `GET /health/ready` | Readiness probe (embedder + vectordb + reranker + llm) |
-
-### CLI (`src/agent/cli.py`)
-
-```bash
-rag ask "问题"           # single query
-rag ask -s "问题"        # streaming output
-rag ask -v "问题"        # verbose: show tool calls and step trace
-rag chat                 # interactive multi-turn chat
-```
+---
 
 ## Key Design Decisions
 
-1. **Agent-first**: LLM drives the reasoning loop; RAG is a callable tool, not the pipeline
-2. **Concurrent tool execution**: multiple tool calls in one LLM response run via `asyncio.gather`
-3. **Two-stage retrieval**: dense recall (top-20) + cross-encoder rerank (top-5)
-4. **Unified tool protocol**: `BaseTool.to_openai_schema()` + per-provider conversion in LLM layer
-5. **Multi-provider LLM**: same Agent code works with Claude, OpenAI, DeepSeek
-6. **Chinese-aware chunking**: jieba + sentence boundaries — no mid-sentence splits
-7. **Config-driven Agent**: system prompt, max iterations, and tool list are YAML-configurable
-8. **Milvus Lite → Standalone**: same SDK, one config change
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Agent-first | LLM drives reasoning; RAG is a tool, not the pipeline |
+| 2 | Concurrent tool execution | `asyncio.gather` — multiple tool calls in one iteration run in parallel |
+| 3 | Config-driven tool list | Add/remove tools in YAML without code changes |
+| 4 | Sliding-window history | Prevents context overflow without a per-provider tokeniser |
+| 5 | trace_id end-to-end | UUID propagated through logs and API response for distributed tracing |
+| 6 | per-step `duration_ms` | surfaced in `AgentStep` and `processing_stages` for latency observability |
+| 7 | Token streaming | `run_stream` uses `generate_chat_stream` → per-token `event: token` SSE |
+| 8 | WebSearch best-effort | Documented as scraping — replace with stable API for production |
+| 9 | Two-stage retrieval | Dense recall (top-20) + cross-encoder rerank (top-5) |
+| 10 | Unified citations | `Citation` dataclass flows from Agent through API without conversion loss |

@@ -36,6 +36,7 @@ def test_query_stream_sse(wired_singletons, client):
         assert resp.status_code == 200
         body = "".join(chunk for chunk in resp.iter_text())
 
+    assert "event: token" in body
     assert "event: answer" in body
     assert "abcDONE" in body
 

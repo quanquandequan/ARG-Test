@@ -1,7 +1,7 @@
-"""Knowledge base search tool — wraps Generator for RAG retrieval."""
+"""Knowledge base search tool — wraps RetrievalEngine for RAG retrieval."""
 
 from src.agent.base_tool import BaseTool
-from src.generation.generator import Generator
+from src.retriever.retrieval_engine import RetrievalEngine
 
 
 class KnowledgeBaseTool(BaseTool):
@@ -12,8 +12,8 @@ class KnowledgeBaseTool(BaseTool):
     chunks with source citations.
     """
 
-    def __init__(self, generator: Generator):
-        self._generator = generator
+    def __init__(self, retrieval_engine: RetrievalEngine):
+        self._retrieval_engine = retrieval_engine
 
     @property
     def name(self) -> str:
@@ -48,8 +48,19 @@ class KnowledgeBaseTool(BaseTool):
             "required": ["query"],
         }
 
-    async def execute(self, query: str = "", top_k: int = 5, filters: dict | None = None, **kwargs) -> str:
-        results = await self._generator.search(query=query, top_k=20, final_k=top_k, filters=filters)
+    async def execute(
+        self,
+        query: str = "",
+        top_k: int = 5,
+        filters: dict | None = None,
+        **kwargs,
+    ) -> str:
+        results = await self._retrieval_engine.search(
+            query=query,
+            top_k=20,
+            final_k=top_k,
+            filters=filters,
+        )
         if not results:
             return "未找到相关文档。"
 

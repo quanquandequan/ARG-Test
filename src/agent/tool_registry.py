@@ -22,7 +22,7 @@ class ToolRegistry:
 
     def definitions(self) -> list[dict]:
         """Return tool schemas for LLM function-calling."""
-        return [t.to_openai_schema() for t in self._tools.values()]
+        return [t.to_tool_schema() for t in self._tools.values()]
 
     def names(self) -> list[str]:
         return list(self._tools.keys())

@@ -1,9 +1,9 @@
-"""Component test for the Generator retrieval engine."""
+"""Component test for the RetrievalEngine."""
 
 import pytest
 
-from src.generation.generator import Generator
 from src.retriever.dense_retriever import DenseRetriever
+from src.retriever.retrieval_engine import RetrievalEngine
 
 
 def _seed(embedder, vectordb, items):
@@ -14,9 +14,9 @@ def _seed(embedder, vectordb, items):
     vectordb.insert(rows)
 
 
-def _make_generator(embedder, vectordb, reranker):
-    retriever = DenseRetriever(embedder, vectordb)
-    return Generator(embedder=embedder, vectordb=vectordb, retriever=retriever, reranker=reranker)
+def _make_engine(embedder, vectordb, reranker):
+    dense = DenseRetriever(embedder, vectordb)
+    return RetrievalEngine(dense_retriever=dense, reranker=reranker)
 
 
 async def test_search_returns_ranked_results(
@@ -30,9 +30,9 @@ async def test_search_returns_ranked_results(
             ("c2", "d2", "Milvus 是向量数据库。", 0),
         ],
     )
-    gen = _make_generator(fake_embedder, fake_vectordb, fake_reranker)
+    engine = _make_engine(fake_embedder, fake_vectordb, fake_reranker)
 
-    results = await gen.search("RAG 是什么？", top_k=5, final_k=2)
+    results = await engine.search("RAG 是什么？", top_k=5, final_k=2)
     assert len(results) >= 1
     assert isinstance(results[0].content, str)
 
@@ -40,11 +40,12 @@ async def test_search_returns_ranked_results(
 async def test_search_empty_index_returns_empty(
     fake_embedder, fake_vectordb, fake_reranker
 ):
-    gen = _make_generator(fake_embedder, fake_vectordb, fake_reranker)
-    results = await gen.search("任意查询")
+    engine = _make_engine(fake_embedder, fake_vectordb, fake_reranker)
+    results = await engine.search("任意查询")
     assert results == []
 
 
-def test_generator_requires_reranker(fake_embedder, fake_vectordb):
-    with pytest.raises(ValueError):
-        Generator(embedder=fake_embedder, vectordb=fake_vectordb)
+def test_retrieval_engine_requires_reranker(fake_embedder, fake_vectordb):
+    dense = DenseRetriever(fake_embedder, fake_vectordb)
+    with pytest.raises((ValueError, TypeError)):
+        RetrievalEngine(dense_retriever=dense, reranker=None)

@@ -2,14 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-
-class CitationOut(BaseModel):
-    text: str = ""
-    document_id: str = ""
-    source_path: str = ""
-    chunk_index: int = 0
-    relevance_score: float = 0.0
-    index: int | None = None
+from src.agent.types import Citation
 
 
 class AgentStepOut(BaseModel):
@@ -18,6 +11,7 @@ class AgentStepOut(BaseModel):
     tool_arguments: dict | None = None
     tool_result: str = ""
     thinking: str = ""
+    duration_ms: float = 0.0
 
 
 class MessageSchema(BaseModel):
@@ -32,13 +26,16 @@ class QueryRequest(BaseModel):
     stream: bool = False
     max_iterations: int = Field(default=10, ge=1, le=30)
     history: list[MessageSchema] | None = None
+    trace_id: str | None = None  # allow client to pass its own trace-id
 
 
 class QueryResponse(BaseModel):
     answer: str
-    citations: list[CitationOut] = Field(default_factory=list)
+    citations: list[Citation] = Field(default_factory=list)
     iterations: int = 0
     steps: list[AgentStepOut] = Field(default_factory=list)
+    processing_stages: dict[str, float] = Field(default_factory=dict)
+    trace_id: str = ""
 
 
 class HealthResponse(BaseModel):

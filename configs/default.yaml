@@ -46,8 +46,12 @@ retrieval:
 
 reranker:
   provider: "dashscope"    # "bge_reranker" (local) / "openai" / "dashscope" (千问)
-  model_name: "BAAI/bge-reranker-v2-m3"
-  model: "qwen3-rerank"    # reranker model: gpt-4o-mini / qwen3-rerank
+  # Model names per provider (only the relevant one is read at runtime):
+  #   bge_reranker  →  bge_model:   "BAAI/bge-reranker-v2-m3"
+  #   openai        →  openai_model: "gpt-4o-mini"
+  #   dashscope     →  model:        "qwen3-rerank"
+  model: "qwen3-rerank"
+  bge_model: "BAAI/bge-reranker-v2-m3"
   device: "cpu"
   batch_size: 16
 
@@ -57,10 +61,13 @@ llm:
   base_url: null         # null = default; set for custom endpoints
   temperature: 0.3
   max_tokens: 2048
-  stream: false
 
 agent:
   max_iterations: 10
+  max_history_tokens: 4000   # sliding-window token budget for conversation history
+  tools:
+    - knowledge_search
+    - web_search
   system_prompt: |
     你是一个智能知识库助手，可以通过调用工具来获取信息和回答问题。为叭嗒、漫画、小程序、插件等产品功能提供技术支持，根据提供的稳定内容回答问题。
 

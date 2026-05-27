@@ -11,8 +11,8 @@ from src.agent.react_loop import ReActAgent
 from src.agent.tools.search_kb import KnowledgeBaseTool
 from src.agent.tools.web_search import WebSearchTool
 from src.api.routers import health, ingestion, query
-from src.generation.generator import Generator
 from src.retriever.dense_retriever import DenseRetriever
+from src.retriever.retrieval_engine import RetrievalEngine
 
 
 @pytest.fixture
@@ -23,18 +23,12 @@ def wired_singletons(fake_embedder, fake_vectordb, fake_llm, fake_reranker, monk
     monkeypatch.setattr(deps, "_llm", fake_llm, raising=False)
     monkeypatch.setattr(deps, "_reranker", fake_reranker, raising=False)
 
-    retriever = DenseRetriever(fake_embedder, fake_vectordb)
-    generator = Generator(
-        embedder=fake_embedder,
-        vectordb=fake_vectordb,
-        retriever=retriever,
-        reranker=fake_reranker,
-    )
-    monkeypatch.setattr(deps, "_generator", generator, raising=False)
+    dense = DenseRetriever(fake_embedder, fake_vectordb)
+    engine = RetrievalEngine(dense_retriever=dense, reranker=fake_reranker)
+    monkeypatch.setattr(deps, "_retrieval_engine", engine, raising=False)
 
-    # Build Agent with fakes
     tools = [
-        KnowledgeBaseTool(generator),
+        KnowledgeBaseTool(engine),
         WebSearchTool(),
     ]
     agent = ReActAgent(llm=fake_llm, tools=tools)
@@ -45,7 +39,7 @@ def wired_singletons(fake_embedder, fake_vectordb, fake_llm, fake_reranker, monk
         "vectordb": fake_vectordb,
         "llm": fake_llm,
         "reranker": fake_reranker,
-        "generator": generator,
+        "retrieval_engine": engine,
         "agent": agent,
     }
 

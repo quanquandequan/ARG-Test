@@ -3,10 +3,10 @@
 from fastapi import APIRouter
 
 from src.api.dependencies import (
-    _singleton_embedder,
-    _singleton_llm,
-    _singleton_reranker,
-    _singleton_vectordb,
+    get_singleton_embedder,
+    get_singleton_llm,
+    get_singleton_reranker,
+    get_singleton_vectordb,
 )
 from src.api.schemas.query import HealthResponse, ReadyResponse
 from src.core.config import get_config
@@ -27,14 +27,14 @@ async def ready():
     checks: dict[str, bool] = {}
 
     try:
-        embedder = _singleton_embedder()
+        embedder = get_singleton_embedder()
         checks["embedder"] = embedder.is_loaded()
     except Exception:
         logger.exception("ready_embedder_failed")
         checks["embedder"] = False
 
     try:
-        vectordb = _singleton_vectordb()
+        vectordb = get_singleton_vectordb()
         vectordb.count()
         checks["vectordb"] = True
     except Exception:
@@ -42,14 +42,14 @@ async def ready():
         checks["vectordb"] = False
 
     try:
-        reranker = _singleton_reranker()
+        reranker = get_singleton_reranker()
         checks["reranker"] = reranker.is_loaded()
     except Exception:
         logger.exception("ready_reranker_failed")
         checks["reranker"] = False
 
     try:
-        llm = _singleton_llm()
+        llm = get_singleton_llm()
         # We do not call the remote API; we only verify the provider was
         # constructed successfully (treat configured LLM as ready).
         checks["llm"] = llm is not None

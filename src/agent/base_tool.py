@@ -26,8 +26,8 @@ class BaseTool(ABC):
         """Execute the tool and return a string result."""
         ...
 
-    def to_openai_schema(self) -> dict:
-        """Return the tool definition in OpenAI function-calling format."""
+    def to_tool_schema(self) -> dict:
+        """Return the tool definition as a function-calling schema."""
         return {
             "name": self.name,
             "description": self.description,

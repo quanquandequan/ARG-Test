@@ -21,6 +21,7 @@ async def query(req: QueryRequest):
     result = await agent.run(
         query=req.query,
         history=history,
+        trace_id=req.trace_id,
     )
 
     steps_out = [
@@ -30,6 +31,7 @@ async def query(req: QueryRequest):
             tool_arguments=s.tool_call.arguments if s.tool_call else None,
             tool_result=s.tool_result[:500] if s.tool_result else "",
             thinking=s.thinking,
+            duration_ms=s.duration_ms,
         )
         for s in result.steps
     ]
@@ -39,6 +41,8 @@ async def query(req: QueryRequest):
         citations=result.citations,
         iterations=result.iterations,
         steps=steps_out,
+        processing_stages=result.processing_stages,
+        trace_id=result.trace_id,
     )
 
 
@@ -51,7 +55,11 @@ async def query_stream(req: QueryRequest):
         history = [Message(role=m.role, content=m.content) for m in req.history]
 
     async def event_stream():
-        async for event in agent.run_stream(query=req.query, history=history):
+        async for event in agent.run_stream(
+            query=req.query,
+            history=history,
+            trace_id=req.trace_id,
+        ):
             yield event
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

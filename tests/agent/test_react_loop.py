@@ -115,11 +115,11 @@ class TestReActAgent:
         result = await agent.run(query="测试")
 
         assert len(result.citations) == 2
-        indices = [c["index"] for c in result.citations]
+        indices = [c.index for c in result.citations]
         assert indices == [1, 3]
 
     async def test_stream_events_direct_answer(self, fake_llm):
-        """Streaming emits an answer event when LLM answers directly."""
+        """Streaming emits token events then a consolidated answer event."""
         fake_llm.response_text = "流式答案"
         agent = ReActAgent(llm=fake_llm, tools=[])
 
@@ -127,9 +127,11 @@ class TestReActAgent:
         async for event in agent.run_stream(query="test"):
             events.append(event)
 
-        assert len(events) == 1
-        assert "event: answer" in events[0]
-        assert "流式答案" in events[0]
+        event_types = [e.split("\n")[0] for e in events]
+        assert "event: token" in event_types
+        assert "event: answer" in event_types
+        assert event_types.index("event: token") < event_types.index("event: answer")
+        assert any("流式答案" in e for e in events)
 
     async def test_tool_execution_error_handled(self, fake_llm):
         """Agent handles tool execution errors gracefully."""

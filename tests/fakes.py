@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 
 from src.embedding.base import BaseEmbedder
-from src.llm.base import BaseLLM, LLMResponse
-from src.llm.types import ChatResponse, ContentBlock, Message, ToolCall
+from src.llm.base import BaseLLM
+from src.llm.types import ChatResponse, ContentBlock, Message
 from src.retriever.reranker_base import BaseReranker
 from src.vectordb.base import BaseVectorDB, SearchResult
 
@@ -153,31 +153,7 @@ class FakeLLM(BaseLLM):
         # Pre-programmed response sequence for agent testing
         self._responses = responses
         self._response_idx = 0
-
-    async def generate(
-        self,
-        prompt: str,
-        system_prompt: str = "",
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-    ) -> LLMResponse:
-        self.last_prompt = prompt
-        self.last_system = system_prompt
-        self.last_temperature = temperature
-        return LLMResponse(content=self.response_text, model="fake", usage={})
-
-    async def generate_stream(
-        self,
-        prompt: str,
-        system_prompt: str = "",
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-    ):
-        self.last_prompt = prompt
-        self.last_system = system_prompt
-        self.last_temperature = temperature
-        for token in self.response_text:
-            yield token
+        self._stream_content_cache: str | None = None
 
     async def generate_chat(
         self,
@@ -194,8 +170,10 @@ class FakeLLM(BaseLLM):
         if self._responses and self._response_idx < len(self._responses):
             resp = self._responses[self._response_idx]
             self._response_idx += 1
+            self._stream_content_cache = resp.content
             return resp
 
+        self._stream_content_cache = self.response_text
         return ChatResponse(
             content=self.response_text,
             model="fake",
@@ -214,7 +192,18 @@ class FakeLLM(BaseLLM):
         self.last_messages = messages
         self.last_tools = tools
         self.last_temperature = temperature
-        for token in self.response_text:
+
+        if self._stream_content_cache is not None:
+            content = self._stream_content_cache
+            self._stream_content_cache = None
+        elif self._responses and self._response_idx < len(self._responses):
+            resp = self._responses[self._response_idx]
+            self._response_idx += 1
+            content = resp.content
+        else:
+            content = self.response_text
+
+        for token in content:
             yield ContentBlock(type="text", text=token)
 
     def is_loaded(self) -> bool:

@@ -1,32 +1,30 @@
-"""RAG retrieval engine — embed → retrieve → rerank."""
+"""Retrieval engine — retrieve → rerank → chunks."""
 
 from src.core.config import get_config
-from src.embedding.base import BaseEmbedder
 from src.retriever.dense_retriever import DenseRetriever
 from src.retriever.reranker_base import BaseReranker
-from src.vectordb.base import BaseVectorDB, SearchResult
+from src.vectordb.base import SearchResult
 
 
-class Generator:
-    """Thin retrieval-only wrapper: embed → retrieve → rerank → chunks.
+class RetrievalEngine:
+    """Retrieve and rerank documents from the knowledge base.
 
-    LLM generation is handled by the Agent layer; this class only returns
-    ranked SearchResult objects for use as tool output.
+    Exposes a single ``search()`` method that runs the full retrieval
+    pipeline and returns ranked chunks.  LLM generation is handled by
+    the Agent layer; this class only returns ``SearchResult`` objects.
     """
 
     def __init__(
         self,
-        embedder: BaseEmbedder,
-        vectordb: BaseVectorDB,
-        retriever: DenseRetriever | None = None,
-        reranker: BaseReranker | None = None,
+        dense_retriever: DenseRetriever,
+        reranker: BaseReranker,
     ):
         if reranker is None:
             raise ValueError(
-                "Generator requires an explicit reranker; "
+                "RetrievalEngine requires an explicit reranker; "
                 "build one via reranker_factory.get_reranker() and inject."
             )
-        self._retriever = retriever or DenseRetriever(embedder, vectordb)
+        self._dense_retriever = dense_retriever
         self._reranker = reranker
 
     async def search(
@@ -36,12 +34,14 @@ class Generator:
         final_k: int | None = None,
         filters: dict | None = None,
     ) -> list[SearchResult]:
-        """Run retrieve → rerank and return ranked chunks (no LLM generation)."""
+        """Run retrieve → rerank and return ranked chunks."""
         cfg = get_config().get("retrieval", {})
         actual_top_k = top_k or cfg.get("top_k", 20)
         actual_final_k = final_k or cfg.get("final_k", 5)
 
-        candidates = self._retriever.retrieve(query, top_k=actual_top_k, filters=filters)
+        candidates = self._dense_retriever.retrieve(
+            query, top_k=actual_top_k, filters=filters
+        )
         if not candidates:
             return []
         return await self._reranker.rerank(query, candidates, top_k=actual_final_k)

@@ -23,7 +23,7 @@ class BgeReranker(BaseReranker):
         batch_size: int | None = None,
     ):
         cfg = get_config().get("reranker", {})
-        self._model_name = model_name or cfg.get("model_name", "BAAI/bge-reranker-v2-m3")
+        self._model_name = model_name or cfg.get("bge_model", "BAAI/bge-reranker-v2-m3")
         self._device = device or cfg.get("device", "cpu")
         self._batch_size = batch_size or cfg.get("batch_size", 16)
         self._model = None

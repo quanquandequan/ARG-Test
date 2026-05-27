@@ -4,21 +4,20 @@
 Usage:
     rag ask "你的问题"              # Single query
     rag ask -s "你的问题"           # Single query + streaming
-    rag ask -v "你的问题"           # Verbose: show tool calls
+    rag ask -v "你的问题"           # Verbose: show tool calls + timing
     rag chat                        # Interactive chat mode
     rag chat -s                     # Interactive + streaming
     rag chat -v                     # Interactive + verbose
     rag --env production ask "..."  # Use production config
 """
 
-from __future__ import annotations
+from __future__ import annotations  # noqa: I001
 
 # -- Suppress C++ gRPC stderr noise via fd-level redirect ----------
 # gRPC C++ core writes GOAWAY / too_many_pings directly to stderr,
 # bypassing Python logging & env vars.  We dup2 stderr through a
 # pipe and spawn a daemon thread to filter the noise.
-import os as _os
-import sys as _sys
+import os as _os  # noqa: I001
 import threading as _threading
 import re as _re
 
@@ -35,7 +34,7 @@ _GRPC_NOISE = _re.compile(
 def _stderr_filter():
     try:
         while True:
-            chunk = _os.read(_rfd, 65536)
+            chunk = _os.read(_rfd, 65536)  # noqa: F821
             if not chunk:
                 break
             clean = b"\n".join(
@@ -53,12 +52,13 @@ _threading.Thread(target=_stderr_filter, daemon=True).start()
 del _re, _threading, _rfd, _wfd
 # -----------------------------------------------------------------
 
-import argparse
-import asyncio
-import os
-import readline  # noqa: F401 — init readline/libedit for proper CJK backspace handling
-import sys
-from pathlib import Path
+import argparse  # noqa: E402
+import asyncio  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import readline  # noqa: E402, F401 — init readline/libedit for CJK backspace
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Ensure project root is on sys.path for both `python -m src.agent.cli` and `pip install -e`
@@ -116,6 +116,21 @@ def _format_answer(text: str) -> str:
     return "\n".join(out)
 
 
+def _parse_sse_event(raw: str) -> tuple[str, dict | str]:
+    """Return (event_type, data) from a raw SSE block."""
+    event_type = "message"
+    data_str = ""
+    for line in raw.splitlines():
+        if line.startswith("event:"):
+            event_type = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            data_str = line[len("data:"):].strip()
+    try:
+        return event_type, json.loads(data_str)
+    except (json.JSONDecodeError, ValueError):
+        return event_type, data_str
+
+
 def _load_dotenv():
     """Load .env file from project root without python-dotenv dependency."""
     env_path = _PROJECT_ROOT / ".env"
@@ -135,9 +150,9 @@ def _load_dotenv():
 
 
 async def _run_query(args):
-    from src.core.config import load_config
-    from src.core.logging import setup_logging
-    from src.api.dependencies import get_agent
+    from src.api.dependencies import get_agent  # noqa: PLC0415
+    from src.core.config import load_config  # noqa: PLC0415
+    from src.core.logging import setup_logging  # noqa: PLC0415
 
     load_config(args.env)
     setup_logging()
@@ -147,19 +162,31 @@ async def _run_query(args):
 
     if args.stream:
         async for event in agent.run_stream(query=args.query):
-            if "event: answer" in event:
-                data_start = event.index('"text": "') + 9
-                data_end = event.rindex('"')
-                text = event[data_start:data_end]
-                print(text, end="", flush=True)
-            elif "event: tool_call" in event and args.verbose:
-                print(f"\n  [TOOL] {event.strip()}", file=sys.stderr)
+            event_type, data = _parse_sse_event(event)
+            if event_type == "token" and isinstance(data, dict):
+                print(data.get("text", ""), end="", flush=True)
+            elif event_type == "tool_call" and args.verbose and isinstance(data, dict):
+                tools = ", ".join(data.get("tools", []))
+                iteration = data.get("iteration", "?")
+                print(
+                    f"\n  [TOOL iter={iteration}] {tools}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            elif event_type == "tool_result" and args.verbose and isinstance(data, dict):
+                print(
+                    f"\n  [RESULT] {data.get('tool')} "
+                    f"({data.get('duration_ms', 0):.0f}ms, "
+                    f"{data.get('result_len', 0)} chars)",
+                    file=sys.stderr,
+                    flush=True,
+                )
         print()
     else:
         result = await agent.run(query=args.query)
 
         if args.verbose:
-            print(f"  ({result.iterations} 次迭代)\n")
+            print(f"  trace_id={result.trace_id}  ({result.iterations} 次迭代)\n")
 
         print(_format_answer(result.answer))
 
@@ -167,25 +194,37 @@ async def _run_query(args):
             print()
             for s in result.steps:
                 if s.tool_call:
-                    print(f"  [CALL] [{s.step_index}] {s.tool_call.name}({s.tool_call.arguments})")
+                    print(
+                        f"  [CALL] [{s.step_index}] "
+                        f"{s.tool_call.name}({s.tool_call.arguments}) "
+                        f"→ {s.duration_ms:.0f}ms"
+                    )
                 else:
-                    print(f"  [THINK] [{s.step_index}] think -> answer")
+                    print(
+                        f"  [THINK] [{s.step_index}] think → answer "
+                        f"({s.duration_ms:.0f}ms)"
+                    )
+
+        if result.processing_stages:
+            total = result.processing_stages.get("total", 0)
+            print(f"\n  [TIMING] total={total:.0f}ms")
 
         if result.citations:
-            print(f"\n  [CITE] {[c['index'] for c in result.citations]}")
+            print(f"  [CITE] {[c.index for c in result.citations]}")
 
 
 async def _run_chat(args):
-    from src.core.config import load_config
-    from src.core.logging import setup_logging
-    from src.api.dependencies import get_agent
-    from src.llm.types import Message
+    from src.api.dependencies import get_agent  # noqa: PLC0415
+    from src.core.config import load_config  # noqa: PLC0415
+    from src.core.logging import setup_logging  # noqa: PLC0415
+    from src.llm.types import Message  # noqa: PLC0415
 
     load_config(args.env)
     setup_logging()
 
     agent = get_agent()
     history: list[Message] = []
+    last_answer: str = ""
 
     print("\nRAG Agent Chat — 输入 /quit 退出, /clear 清除历史\n")
 
@@ -208,30 +247,38 @@ async def _run_chat(args):
 
         if args.stream:
             print("Agent: ", end="", flush=True)
+            last_answer = ""
             async for event in agent.run_stream(query=query, history=history):
-                if "event: answer" in event:
-                    data_start = event.index('"text": "') + 9
-                    data_end = event.rindex('"')
-                    text = event[data_start:data_end]
-                    print(text, end="", flush=True)
-                elif "event: tool_call" in event and args.verbose:
-                    print(f"\n   [TOOL] {event.strip()}", file=sys.stderr)
+                event_type, data = _parse_sse_event(event)
+                if event_type == "token" and isinstance(data, dict):
+                    tok = data.get("text", "")
+                    last_answer += tok
+                    print(tok, end="", flush=True)
+                elif event_type == "answer" and isinstance(data, dict):
+                    last_answer = data.get("text", last_answer)
+                elif event_type == "tool_call" and args.verbose and isinstance(data, dict):
+                    tools = ", ".join(data.get("tools", []))
+                    print(f"\n   [TOOL] {tools}", file=sys.stderr, flush=True)
             print()
         else:
             result = await agent.run(query=query, history=history)
+            last_answer = result.answer
             if args.verbose and result.steps:
                 for s in result.steps:
                     if s.tool_call:
-                        print(f"   [TOOL] {s.tool_call.name}({s.tool_call.arguments})")
+                        print(
+                            f"   [TOOL] {s.tool_call.name}({s.tool_call.arguments}) "
+                            f"→ {s.duration_ms:.0f}ms"
+                        )
             formatted = _format_answer(result.answer)
             if formatted.startswith("|"):
                 print(f"Agent:\n{formatted}")
             else:
                 print(f"Agent: {formatted}")
 
-        # Update history
+        # Append to history (append both sides so multi-turn works)
         history.append(Message(role="user", content=query))
-        history.append(Message(role="assistant", content=result.answer))
+        history.append(Message(role="assistant", content=last_answer))
         print()
 
 
@@ -257,7 +304,7 @@ def main():
     ask = sub.add_parser("ask", help="单次查询")
     ask.add_argument("query", help="你的问题")
     ask.add_argument("-s", "--stream", action="store_true", help="流式输出")
-    ask.add_argument("-v", "--verbose", action="store_true", help="显示工具调用和步骤")
+    ask.add_argument("-v", "--verbose", action="store_true", help="显示工具调用、计时和步骤")
 
     # chat
     chat = sub.add_parser("chat", help="交互式对话")
