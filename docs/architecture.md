@@ -2,54 +2,105 @@
 
 ## Overview
 
-RAG Pipeline is a production-grade retrieval-augmented generation system for enterprise knowledge base retrieval, optimized for Chinese documents.
+RAG Pipeline is a production-grade **Agentic** retrieval-augmented generation system for enterprise knowledge base Q&A, optimized for Chinese documents.
 
-## Pipeline
+The system is built around a **ReAct Agent** that drives the full reasoning loop. RAG retrieval is exposed as a **tool** the Agent can call — not a hardwired pipeline.
+
+## Agent Architecture
 
 ```
-Document Ingestion:  Loader → Cleaner → ChineseChunker → Embedding(BGE-M3) → Milvus
-Query:              Query → Embedding → Milvus ANN Search(top-20) → Reranker(top-5) → LLM → Cited Answer
+User Query
+    │
+    ▼
+ReActAgent  ── Think → Act → Observe (up to max_iterations) ──▶  Final Answer
+    │
+    ├── KnowledgeBaseTool ──▶ Generator (embed → ANN search → rerank) ──▶ Milvus
+    │
+    └── WebSearchTool ──▶ External search (best-effort fallback)
+    │
+    ▼
+LLM Provider  (Claude / OpenAI / DeepSeek — unified tool-calling interface)
+```
+
+## Document Ingestion (unchanged)
+
+```
+Loader → Cleaner → ChineseChunker → Embedding → Milvus
 ```
 
 ## Components
 
-### Ingestion
-- **DocumentLoader**: Dispatches by file extension to PDF/Markdown/Text readers
-- **TextCleaner**: NFKC normalization, fullwidth-to-halfwidth, Chinese quote normalization
-- **ChineseChunker**: jieba-based sentence boundary detection, structure-aware splitting, overlap
+### Agent Layer (`src/agent/`)
 
-### Embedding
-- **BgeM3Embedder**: BAAI/bge-m3 model, 1024-dim dense vectors, L2 normalized
+| Class | Role |
+|-------|------|
+| `ReActAgent` | ReAct Think→Act→Observe loop; concurrent tool execution via `asyncio.gather` |
+| `ToolRegistry` | Register / lookup tools; emit JSON Schema for LLM function-calling |
+| `KnowledgeBaseTool` | Wraps `Generator.search()` — retrieves and formats ranked chunks |
+| `WebSearchTool` | Best-effort DuckDuckGo HTML scraping (external fallback) |
+| `BaseTool` | Abstract interface — `name`, `description`, `parameters` (JSON Schema), `execute()` |
 
-### Vector Database
-- **MilvusStore**: Dual-mode — Milvus Lite (zero-config dev) or Milvus Standalone (production)
-- Schema: id, document_id, content, chunk_index, embedding(1024, IVF_FLAT/HNSW), metadata(JSON)
+Agent configuration lives in **`configs/default.yaml`** under `agent:`:
 
-### Retrieval
-- **DenseRetriever**: Embed query → ANN search in Milvus
-- **BgeReranker**: BAAI/bge-reranker-v2-m3 cross-encoder scoring
+```yaml
+agent:
+  max_iterations: 10
+  system_prompt: |
+    ...
+```
 
-### Generation
-- **PromptBuilder**: Chinese system prompt with numbered context
-- **CitationFormatter**: Parse [1], [2] markers → source metadata
-- **Generator**: Orchestrates retrieve → rerank → generate → cite
+### Retrieval Engine (`src/generation/generator.py`)
 
-### LLM Providers
-- **ClaudeProvider**: Anthropic SDK with streaming
-- **OpenAIProvider**: OpenAI SDK with streaming
-- Pluggable via config: `LLM_PROVIDER=claude|openai`
+`Generator.search()` = embed query → ANN search (top-20) → cross-encoder rerank (top-5) → `list[SearchResult]`
 
-### API
-- **FastAPI** with async endpoints
-- `POST /documents/ingest` — Upload and index
-- `DELETE /documents/{id}` — Remove document
-- `POST /query` — RAG Q&A
-- `POST /query/stream` — SSE streaming response
-- `GET /health`, `GET /health/ready` — Health checks
+It does **not** call the LLM; generation is entirely the Agent's responsibility.
+
+### LLM Providers (`src/llm/`)
+
+- **ClaudeProvider** — Anthropic SDK, full tool-calling support
+- **OpenAIProvider** — OpenAI-compatible (OpenAI, DeepSeek, DashScope), tool-calling support
+
+Both implement `BaseLLM.generate_chat(messages, tools, tool_choice)` → `ChatResponse`.
+Internal message format (`Message`, `ToolCall`, `ChatResponse`, `ContentBlock`) is provider-agnostic; each provider handles serialisation to its own API format.
+
+### Ingestion (`src/ingestion/`)
+
+- **DocumentLoader** — dispatches by extension (PDF / Markdown / Text / XLSX / XMind)
+- **TextCleaner** — NFKC normalization, fullwidth→halfwidth, Chinese quote normalization
+- **ChineseChunker** — jieba sentence-boundary detection, overlap, no mid-sentence splits
+
+### Embedding & Vector DB
+
+- **OpenAIEmbedder** / **BgeM3Embedder** — pluggable via `embedding.provider` config
+- **MilvusStore** — Lite (zero-config dev) or Standalone (production); same SDK API
+
+### API (`src/api/`)
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /query` | Agent Q&A — returns `answer`, `citations`, `iterations`, `steps` |
+| `POST /query/stream` | SSE streaming: `tool_call` / `tool_result` / `answer` events |
+| `POST /documents/ingest` | Upload and index a document |
+| `DELETE /documents/{id}` | Remove all chunks for a document |
+| `GET /health` | Liveness probe |
+| `GET /health/ready` | Readiness probe (embedder + vectordb + reranker + llm) |
+
+### CLI (`src/agent/cli.py`)
+
+```bash
+rag ask "问题"           # single query
+rag ask -s "问题"        # streaming output
+rag ask -v "问题"        # verbose: show tool calls and step trace
+rag chat                 # interactive multi-turn chat
+```
 
 ## Key Design Decisions
 
-1. **Milvus Lite → Standalone upgrade**: Same SDK API, one config change
-2. **Two-stage retrieval**: Dense recall (top-20) + cross-encoder rerank (top-5)
-3. **Chinese-aware chunking**: jieba + sentence boundaries, no split sentences
-4. **Async throughout**: Non-blocking I/O from retrieval to LLM
+1. **Agent-first**: LLM drives the reasoning loop; RAG is a callable tool, not the pipeline
+2. **Concurrent tool execution**: multiple tool calls in one LLM response run via `asyncio.gather`
+3. **Two-stage retrieval**: dense recall (top-20) + cross-encoder rerank (top-5)
+4. **Unified tool protocol**: `BaseTool.to_openai_schema()` + per-provider conversion in LLM layer
+5. **Multi-provider LLM**: same Agent code works with Claude, OpenAI, DeepSeek
+6. **Chinese-aware chunking**: jieba + sentence boundaries — no mid-sentence splits
+7. **Config-driven Agent**: system prompt, max iterations, and tool list are YAML-configurable
+8. **Milvus Lite → Standalone**: same SDK, one config change

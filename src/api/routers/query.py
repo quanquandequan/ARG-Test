@@ -1,7 +1,5 @@
 """Query endpoints — Agent-based RAG Q&A and streaming."""
 
-import json
-
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 

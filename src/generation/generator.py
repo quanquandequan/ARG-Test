@@ -8,7 +8,11 @@ from src.vectordb.base import BaseVectorDB, SearchResult
 
 
 class Generator:
-    """Thin retrieval-only wrapper: embed → retrieve → rerank → chunks."""
+    """Thin retrieval-only wrapper: embed → retrieve → rerank → chunks.
+
+    LLM generation is handled by the Agent layer; this class only returns
+    ranked SearchResult objects for use as tool output.
+    """
 
     def __init__(
         self,
@@ -22,8 +26,6 @@ class Generator:
                 "Generator requires an explicit reranker; "
                 "build one via reranker_factory.get_reranker() and inject."
             )
-        self._embedder = embedder
-        self._vectordb = vectordb
         self._retriever = retriever or DenseRetriever(embedder, vectordb)
         self._reranker = reranker
 
@@ -35,17 +37,11 @@ class Generator:
         filters: dict | None = None,
     ) -> list[SearchResult]:
         """Run retrieve → rerank and return ranked chunks (no LLM generation)."""
-        import time
-
         cfg = get_config().get("retrieval", {})
         actual_top_k = top_k or cfg.get("top_k", 20)
         actual_final_k = final_k or cfg.get("final_k", 5)
 
-        t0 = time.perf_counter()
         candidates = self._retriever.retrieve(query, top_k=actual_top_k, filters=filters)
-
         if not candidates:
             return []
-
-        ranked = await self._reranker.rerank(query, candidates, top_k=actual_final_k)
-        return ranked
+        return await self._reranker.rerank(query, candidates, top_k=actual_final_k)

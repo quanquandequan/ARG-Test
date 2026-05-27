@@ -39,7 +39,6 @@ class QueryResponse(BaseModel):
     citations: list[CitationOut] = Field(default_factory=list)
     iterations: int = 0
     steps: list[AgentStepOut] = Field(default_factory=list)
-    processing_stages: dict[str, float] = Field(default_factory=dict)
 
 
 class HealthResponse(BaseModel):

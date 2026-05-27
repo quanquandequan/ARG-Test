@@ -70,13 +70,18 @@ def get_generator() -> Generator:
 def get_agent() -> ReActAgent:
     global _agent
     if _agent is None:
+        from src.core.config import get_config
         llm = _singleton_llm()
         generator = get_generator()
-        reranker = _singleton_reranker()
-
+        cfg_agent = get_config().get("agent", {})
         tools = [
             KnowledgeBaseTool(generator),
             WebSearchTool(),
         ]
-        _agent = ReActAgent(llm=llm, tools=tools)
+        _agent = ReActAgent(
+            llm=llm,
+            tools=tools,
+            system_prompt=cfg_agent.get("system_prompt", "") or "",
+            max_iterations=int(cfg_agent.get("max_iterations", 10)),
+        )
     return _agent

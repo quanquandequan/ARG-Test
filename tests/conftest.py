@@ -8,11 +8,6 @@ from omegaconf import DictConfig, OmegaConf
 import src.core.config as cfg_mod
 from tests.fakes import FakeEmbedder, FakeLLM, FakeReranker, FakeVectorDB
 
-_TEST_SYSTEM_PROMPT = (
-    "你是测试助手。请根据上下文回答，使用 [n] 标注引用。\n\n"
-    "## 上下文文档\n{context}\n"
-)
-
 
 def _build_test_config() -> DictConfig:
     return OmegaConf.create(
@@ -65,7 +60,10 @@ def _build_test_config() -> DictConfig:
                 "temperature": 0.0,
                 "max_tokens": 256,
                 "stream": False,
-                "system_prompt": _TEST_SYSTEM_PROMPT,
+            },
+            "agent": {
+                "max_iterations": 5,
+                "system_prompt": "",
             },
             "api": {
                 "host": "127.0.0.1",
