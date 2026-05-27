@@ -46,7 +46,7 @@ class TestReActAgent:
     async def test_direct_answer_no_tools(self, fake_llm):
         """Agent answers directly when LLM returns text."""
         fake_llm.response_text = "你是ReAct Agent吗？不，我是普通回答。"
-        agent = ReActAgent(llm=fake_llm, tools=[])
+        agent = ReActAgent(llm=fake_llm, tools=[], system_prompt="test")
 
         result = await agent.run(query="你好")
 
@@ -71,7 +71,7 @@ class TestReActAgent:
                 tool_calls=[],
             ),
         ]
-        agent = ReActAgent(llm=fake_llm, tools=[fake_tool])
+        agent = ReActAgent(llm=fake_llm, tools=[fake_tool], system_prompt="test")
 
         result = await agent.run(query="echo hello")
 
@@ -100,7 +100,7 @@ class TestReActAgent:
         ))
         fake_llm._responses = responses
         fake_llm._response_idx = 0
-        agent = ReActAgent(llm=fake_llm, tools=[fake_tool], max_iterations=3)
+        agent = ReActAgent(llm=fake_llm, tools=[fake_tool], system_prompt="test", max_iterations=3)
 
         result = await agent.run(query="loop")
 
@@ -110,7 +110,7 @@ class TestReActAgent:
     async def test_citation_extraction(self, fake_llm):
         """Agent extracts [N] markers from the answer."""
         fake_llm.response_text = "根据 [1] 和 [3] 的资料，答案是 X。"
-        agent = ReActAgent(llm=fake_llm, tools=[])
+        agent = ReActAgent(llm=fake_llm, tools=[], system_prompt="test")
 
         result = await agent.run(query="测试")
 
@@ -121,7 +121,7 @@ class TestReActAgent:
     async def test_stream_events_direct_answer(self, fake_llm):
         """Streaming emits token events then a consolidated answer event."""
         fake_llm.response_text = "流式答案"
-        agent = ReActAgent(llm=fake_llm, tools=[])
+        agent = ReActAgent(llm=fake_llm, tools=[], system_prompt="test")
 
         events = []
         async for event in agent.run_stream(query="test"):
@@ -160,7 +160,7 @@ class TestReActAgent:
                 stop_reason="end_turn",
             ),
         ]
-        agent = ReActAgent(llm=fake_llm, tools=[FailingTool()])
+        agent = ReActAgent(llm=fake_llm, tools=[FailingTool()], system_prompt="test")
 
         result = await agent.run(query="test")
 
@@ -187,7 +187,7 @@ class TestReActAgent:
                 stop_reason="end_turn",
             ),
         ]
-        agent = ReActAgent(llm=fake_llm, tools=[fake_tool])
+        agent = ReActAgent(llm=fake_llm, tools=[fake_tool], system_prompt="test")
 
         result = await agent.run(query="call two tools")
 
@@ -222,7 +222,7 @@ class TestReActAgent:
                 stop_reason="end_turn",
             ),
         ]
-        agent = ReActAgent(llm=fake_llm, tools=[fake_tool])
+        agent = ReActAgent(llm=fake_llm, tools=[fake_tool], system_prompt="test")
 
         result = await agent.run(query="multi-round")
 
@@ -250,7 +250,7 @@ class TestReActAgent:
                 stop_reason="end_turn",
             ),
         ]
-        agent = ReActAgent(llm=fake_llm, tools=[fake_tool])
+        agent = ReActAgent(llm=fake_llm, tools=[fake_tool], system_prompt="test")
 
         events: list[str] = []
         async for event in agent.run_stream(query="stream test"):
@@ -281,7 +281,7 @@ class TestReActAgent:
                 stop_reason="end_turn",
             ),
         ]
-        agent = ReActAgent(llm=fake_llm, tools=[])  # no tools registered
+        agent = ReActAgent(llm=fake_llm, tools=[], system_prompt="test")  # no tools registered
 
         result = await agent.run(query="call nonexistent")
 

@@ -31,7 +31,7 @@ def wired_singletons(fake_embedder, fake_vectordb, fake_llm, fake_reranker, monk
         KnowledgeBaseTool(engine),
         WebSearchTool(),
     ]
-    agent = ReActAgent(llm=fake_llm, tools=tools)
+    agent = ReActAgent(llm=fake_llm, tools=tools, system_prompt="test")
     monkeypatch.setattr(deps, "_agent", agent, raising=False)
 
     return {

@@ -17,18 +17,6 @@ from src.llm.types import Message, ToolCall
 
 logger = get_logger(__name__)
 
-# Python-level fallback — canonical value lives in configs/default.yaml (agent.system_prompt)
-_SYSTEM_PROMPT = (
-    "你是一个智能知识库助手，可以通过调用工具来获取信息和回答问题。\n\n"
-    "当用户有问题时，优先调用 knowledge_search 在知识库中查找，"
-    "必要时再使用 web_search 获取实时信息。\n"
-    "回答时引用来源编号 [1]、[2] 等，使用中文回答。"
-)
-
-_MAX_ITERATIONS = 10
-_DEFAULT_MAX_HISTORY_TOKENS = 4000
-
-
 class ReActAgent:
     """ReAct-pattern Agent: Think → Act → Observe → Repeat → Answer."""
 
@@ -37,12 +25,17 @@ class ReActAgent:
         llm: BaseLLM,
         tools: list[BaseTool] | None = None,
         system_prompt: str = "",
-        max_iterations: int = _MAX_ITERATIONS,
-        max_history_tokens: int = _DEFAULT_MAX_HISTORY_TOKENS,
+        max_iterations: int = 10,
+        max_history_tokens: int = 4000,
     ):
+        if not system_prompt:
+            raise ValueError(
+                "system_prompt is required — configure it in "
+                "configs/default.yaml (agent.system_prompt)"
+            )
         self._llm = llm
         self._registry = ToolRegistry(tools or [])
-        self._system_prompt = system_prompt or _SYSTEM_PROMPT
+        self._system_prompt = system_prompt
         self._max_iterations = max_iterations
         self._max_history_tokens = max_history_tokens
 
@@ -52,11 +45,15 @@ class ReActAgent:
 
     def _build_messages(self, history: list[Message] | None, query: str) -> list[Message]:
         """Assemble system + truncated history + current user query."""
+        from datetime import date
+
         truncated = truncate_history(
             history or [], max_tokens=self._max_history_tokens
         )
+        today = date.today().strftime("%Y-%m-%d")
+        dated_prompt = f"{self._system_prompt}\n\n当前日期: {today}"
         return (
-            [Message(role="system", content=self._system_prompt)]
+            [Message(role="system", content=dated_prompt)]
             + truncated
             + [Message(role="user", content=query)]
         )
