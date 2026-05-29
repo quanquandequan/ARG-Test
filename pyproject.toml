@@ -20,8 +20,6 @@ dependencies = [
     "jieba>=0.42",
     "openpyxl>=3.1",
     "pymilvus>=2.4",
-    "FlagEmbedding>=1.2",
-    "sentence-transformers>=2.7",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "python-multipart>=0.0.9",
@@ -32,6 +30,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Local BGE models (embedding + reranker). Pulls in PyTorch — install only
+# when using provider="bge_m3" or provider="bge_reranker" in config.
+local = [
+    "FlagEmbedding>=1.2",
+    "sentence-transformers>=2.7",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

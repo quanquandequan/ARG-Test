@@ -38,6 +38,9 @@ async def ready():
 
     try:
         reranker = deps.get_singleton_reranker()
+        # For API-based rerankers (OpenAI, DashScope), is_loaded() only checks
+        # that the API key env-var is set — it does NOT verify remote connectivity.
+        # For local BgeReranker it checks that the model weights are in memory.
         checks["reranker"] = reranker.is_loaded()
     except Exception:
         logger.exception("ready_reranker_failed")
@@ -45,6 +48,7 @@ async def ready():
 
     try:
         llm = deps.get_singleton_llm()
+        # Checks that the provider was constructed; does not make a remote call.
         checks["llm"] = llm is not None
     except Exception:
         logger.exception("ready_llm_failed")

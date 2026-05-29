@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from src.agent.base_tool import BaseTool
 from src.agent.history import truncate_history
@@ -111,6 +111,27 @@ class ReActAgent:
             + [Message(role="user", content=query)]
         )
 
+    # ── Tool execution helper ────────────────────────────────────────────
+
+    async def _safe_execute(
+        self, tc: ToolCall, trace_id: str
+    ) -> tuple[ToolCall, str, float]:
+        """Execute one tool call, catch any exception, return (tc, result, ms)."""
+        t0 = time.perf_counter()
+        try:
+            tool = self._registry.get(tc.name)
+            result = await tool.execute(**tc.arguments)
+        except Exception as e:
+            result = f"工具执行错误: {e}"
+            logger.warning(
+                "tool_execution_error",
+                trace_id=trace_id,
+                tool=tc.name,
+                error=str(e),
+            )
+        dur = (time.perf_counter() - t0) * 1000
+        return tc, result, dur
+
     # ── Core ReAct loop (shared by run and run_stream) ───────────────────
 
     async def _react_core(
@@ -165,24 +186,8 @@ class ReActAgent:
                 ))
 
                 # Execute all tool calls concurrently
-                async def _safe_execute(tc: ToolCall) -> tuple[ToolCall, str, float]:
-                    t0 = time.perf_counter()
-                    try:
-                        tool = self._registry.get(tc.name)
-                        result = await tool.execute(**tc.arguments)
-                    except Exception as e:
-                        result = f"工具执行错误: {e}"
-                        logger.warning(
-                            "tool_execution_error",
-                            trace_id=trace_id,
-                            tool=tc.name,
-                            error=str(e),
-                        )
-                    dur = (time.perf_counter() - t0) * 1000
-                    return tc, result, dur
-
                 tc_results = list(await asyncio.gather(
-                    *[_safe_execute(tc) for tc in response.tool_calls]
+                    *[self._safe_execute(tc, trace_id) for tc in response.tool_calls]
                 ))
 
                 for tc, result, dur_ms in tc_results:
@@ -262,10 +267,21 @@ class ReActAgent:
 
     @staticmethod
     async def _yield_tokens(text: str) -> AsyncGenerator[str]:
-        """Yield cached response text as SSE token events.
+        """Yield the buffered LLM response as SSE token events.
 
-        Avoids a second LLM call by chunking the already-received response
-        text into token-sized pieces.
+        **Simulated streaming**: this method does NOT call the LLM again.
+        Instead it splits the already-received ``generate_chat`` response into
+        fixed-size chunks (``_TOKEN_CHUNK_SIZE`` chars) and yields them with an
+        ``asyncio.sleep(0)`` between each chunk to let the event loop breathe.
+
+        Trade-offs vs. true ``generate_chat_stream``:
+        - ✅ Single LLM call per iteration — no duplicate cost or latency.
+        - ✅ Tool-call vs. final-answer detection is reliable (full response).
+        - ⚠️  Chunks arrive at network speed, not at LLM token-generation speed.
+          The client perceives a short pause then a burst, rather than a steady
+          per-token drip.  For most chat UIs this is acceptable; if true
+          token-level streaming is required, swap this for ``generate_chat_stream``
+          and handle tool-call detection in the streaming parser.
         """
         for start in range(0, len(text), _TOKEN_CHUNK_SIZE):
             chunk = text[start : start + _TOKEN_CHUNK_SIZE]

@@ -47,9 +47,9 @@ retrieval:
 reranker:
   provider: "dashscope"    # "bge_reranker" (local) / "openai" / "dashscope" (千问)
   # Model names per provider (only the relevant one is read at runtime):
-  #   bge_reranker  →  bge_model:   "BAAI/bge-reranker-v2-m3"
-  #   openai        →  openai_model: "gpt-4o-mini"
-  #   dashscope     →  model:        "qwen3-rerank"
+  #   bge_reranker  →  bge_model: "BAAI/bge-reranker-v2-m3"
+  #   openai        →  model:     "gpt-4o-mini"
+  #   dashscope     →  model:     "qwen3-rerank"
   model: "qwen3-rerank"
   bge_model: "BAAI/bge-reranker-v2-m3"
   device: "cpu"

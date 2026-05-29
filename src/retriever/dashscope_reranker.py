@@ -15,20 +15,27 @@ logger = get_logger(__name__)
 _DASHSCOPE_RERANK_URL = (
     "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 )
+_DEFAULT_TIMEOUT = 30
 
 
 class DashScopeReranker(BaseReranker):
-    """Reranker via DashScope qwen3-rerank API."""
+    """Reranker via DashScope qwen3-rerank API.
+
+    Uses a per-request ``httpx.AsyncClient`` context manager so the underlying
+    HTTP connection is always properly closed, avoiding the "Unclosed client"
+    warning that a long-lived singleton client would produce on process exit.
+    """
 
     def __init__(
         self,
         api_key: str | None = None,
         model: str | None = None,
+        timeout: float = _DEFAULT_TIMEOUT,
     ):
         cfg = get_config().get("reranker", {})
         self._api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "")
         self._model = model or cfg.get("model", "qwen3-rerank")
-        self._client = None
+        self._timeout = timeout
 
     def load(self) -> None:
         if not self._api_key:
@@ -36,11 +43,6 @@ class DashScopeReranker(BaseReranker):
 
     def is_loaded(self) -> bool:
         return bool(self._api_key)
-
-    def _get_client(self):
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=30)
-        return self._client
 
     async def rerank(
         self,
@@ -67,14 +69,15 @@ class DashScopeReranker(BaseReranker):
         }
 
         try:
-            resp = await self._get_client().post(
-                _DASHSCOPE_RERANK_URL,
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=body,
-            )
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(
+                    _DASHSCOPE_RERANK_URL,
+                    headers={
+                        "Authorization": f"Bearer {self._api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
+                )
             resp.raise_for_status()
             data = resp.json()
         except httpx.HTTPError as e:
@@ -87,7 +90,6 @@ class DashScopeReranker(BaseReranker):
             logger.warning("reranker_empty_results", query=query[:50])
             return candidates[:top_k]
 
-        # Score each candidate from API results
         score_map: dict[int, float] = {}
         for r in results:
             score_map[r["index"]] = r.get("relevance_score", 0.0)
