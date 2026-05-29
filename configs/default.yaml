@@ -9,10 +9,10 @@ app:
 
 embedding:
   provider: "dashscope"   # "bge_m3" (local) / "openai" / "dashscope" (千问)
-  model_name: "text-embedding-v4"  # dashscope: text-embedding-v4
-  base_url: null          # null = OpenAI default; set for custom endpoints
-  dim: 1024               # text-embedding-v4 default dim; null = model default
-  device: "cpu"           # "cpu", "cuda", "mps" (only for local models)
+  model_name: "text-embedding-v4"
+  base_url: null
+  dim: 1024
+  device: "cpu"
   normalize: true
   batch_size: 10          # DashScope limit is 10 per request
   use_onnx: false
@@ -27,13 +27,11 @@ chunking:
 vectordb:
   provider: "milvus"
   mode: "lite"           # "lite" or "standalone"
-  uri: "./data/milvus_lite/milvus.db"  # relative to project root; override via env-specific config
+  uri: "./data/milvus_lite/milvus.db"
   collection_name: "knowledge_base"
-  dim: 1024              # Must match embedding dim: bge-m3=1024, text-embedding-v4=1024, text-embedding-3-small=1536
-  # Standalone settings (when mode=standalone)
+  dim: 1024
   host: "localhost"
   port: 19530
-  # Index settings
   index_type: "IVF_FLAT"
   metric_type: "COSINE"
   index_params:
@@ -45,7 +43,7 @@ retrieval:
   similarity_threshold: 0.3
 
 reranker:
-  provider: "dashscope"    # "bge_reranker" (local) / "openai" / "dashscope" (千问)
+  provider: "dashscope"    # "bge_reranker" (local) / "openai" / "dashscope"
   # Model names per provider (only the relevant one is read at runtime):
   #   bge_reranker  →  bge_model: "BAAI/bge-reranker-v2-m3"
   #   openai        →  model:     "gpt-4o-mini"
@@ -57,44 +55,142 @@ reranker:
 
 llm:
   provider: "deepseek"   # "claude" / "openai" / "deepseek"
-  model: "deepseek-chat" # deepseek-v4-pro via deepseek-chat endpoint
-  base_url: null         # null = default; set for custom endpoints
+  model: "deepseek-chat"
+  base_url: null
   temperature: 0.3
   max_tokens: 2048
 
+# ── Agent 配置 ────────────────────────────────────────────────────────────────
 agent:
   max_iterations: 10
   max_history_tokens: 4000   # sliding-window token budget for conversation history
-  tools:
-    - knowledge_search
-    - web_search
+
+  # Agent 总系统 Prompt
+  # 定义角色、信息来源优先级、工作流程和回答规则。
+  # 工具的具体调用时机说明写在下方各工具的 description 字段，保持此处简洁。
   system_prompt: |
-    你是一个测试小助手，可以通过调用工具帮助测试人员进行测试，获取信息和回答问题。
-    ## 可用工具
-    - **knowledge_search**: 在知识库中搜索文档，自动完成检索和精排，返回最相关的片段及来源编号。当用户问题需要专业知识库信息时，这是首选工具。
-    - **web_search**: 搜索互联网获取实时信息。仅当知识库无法回答时使用。
+    你是一个专注于软件测试的 AI 助手，帮助测试人员查询信息、分析问题、生成测试用例。
 
     ## 信息来源优先级
     每个文档片段会标注来源文件名，请据此判断权威性：
-    - **ACN_cases.xlsx**：主要来源，包含叭嗒app现有功能的测试用例，为产品逻辑的权威定义。
+    - **ACN_cases.xlsx**：主要来源，包含叭嗒 app 现有功能的测试用例，为产品逻辑的权威定义。
     - **ACN_buglist.xlsx**：缺陷记录，反映已知问题和历史 Bug，用于辅助判断。
-    - **以“叭嗒”为开头的.xmind文件**：作为叭嗒app的历史测试用例，与现有逻辑可能不一致，用补充历史背景和上下文。
-    - **包含"插件"、"基线"的.xmind文件**：作为漫画插件、基线测试的背景和上下文。
-    - **包含"小程序"的.xmind文件**：作为漫画小程序测试用例的背景和上下文。
+    - **以"叭嗒"开头的 .xmind 文件**：历史测试用例，与现有逻辑可能不一致，仅作背景参考。
+    - **包含"插件"、"基线"的 .xmind 文件**：漫画插件和基线测试的背景。
+    - **包含"小程序"的 .xmind 文件**：漫画小程序测试用例的背景。
     - **其他 .xmind 文件**：辅助参考。
     当不同来源信息冲突时，按以上优先级采纳。
 
     ## 工作流程
-    1. 分析用户问题，确定需要哪些信息
-    2. 如有必要，调用 knowledge_search 搜索知识库
-    3. 如果知识库无法回答，尝试 web_search
-    4. 综合所有信息，给出完整答案
+    1. 分析用户问题，判断需要哪些工具
+    2. 优先调用 knowledge_search 搜索知识库
+    3. 知识库无法满足时，可尝试 web_search
+    4. 生成测试用例时，先 knowledge_search 获取格式样本，再调用 write_test_cases
+    5. 综合所有信息给出完整回答
 
     ## 回答规则
-    - 必须引用信息来源，使用 [1]、[2] 等编号
-    - 如果所有工具都无法找到答案，明确告知"根据目前的信息无法回答"
-    - 答案应简洁、准确、结构化
     - 使用中文回答
+    - 引用信息来源，格式为 [1]、[2]
+    - 所有工具都无法回答时，明确说明"根据目前的信息无法回答"
+
+  # 工具列表
+  # 每个工具支持两个可选字段：
+  #   description   — 展示给 Agent（主 LLM）的工具说明，决定"何时调用该工具"。
+  #                   省略时使用代码内置的默认说明。
+  #   system_prompt — 仅 LLM-powered 工具（write_test_cases）需要。
+  #                   工具内部独立调用 LLM 时的提示词，与 Agent 对话上下文完全隔离。
+  #                   省略时按优先级依次查找：test_generator.system_prompt → 代码默认值。
+  tools:
+    - name: knowledge_search
+      description: |
+        在知识库中搜索文档内容（测试用例、缺陷记录、功能说明等）。
+
+        适用场景：
+        - 查询某功能的现有测试用例
+        - 了解历史缺陷分布和已知问题
+        - 获取测试用例格式、模板和字段定义（生成新用例前必须先调用此工具）
+
+        搜索技巧：使用"功能名 + 测试用例"格式，如"登录 测试用例"、"支付 异常用例"。
+        返回带来源编号 [1][2] 的文档片段。
+
+    - name: web_search
+      description: |
+        搜索互联网获取实时信息（尽力而为，不保证可用）。
+
+        仅在以下情况使用：
+        - 知识库中找不到所需信息
+        - 需要最新的技术文档或行业标准
+
+        注意：知识库是第一优先级，本工具为补充手段。
+
+    - name: write_test_cases
+      description: |
+        根据需求文档内容生成完整测试用例，保存为 Excel 文件并返回文件路径。
+
+        调用规范（必须遵守）：
+        1. 先调用 knowledge_search 搜索"测试用例 格式 模板"，获取现有用例样本
+        2. 将搜索结果传入 kb_samples 参数，用于对齐格式和描述风格
+        3. 传入完整的需求文档文本作为 requirement 参数
+        4. 可选传入 module（模块名）和 output_dir（输出目录）
+
+        返回：Excel 文件绝对路径 + 用例数量摘要。
+
+      # write_test_cases 工具内部调用 LLM 时的提示词。
+      # 变量：{kb_section}=知识库样本, {requirement}=需求文档, {module}=模块名
+      system_prompt: |
+        你是一名拥有丰富经验的软件测试工程师，专注于为移动应用编写测试用例。
+
+        你的任务是将需求文档转换为结构化的测试用例列表，以 JSON 数组格式输出。
+
+        ## 输出格式（严格遵守）
+        只输出 JSON 数组，不加任何 Markdown 标记或解释文字。
+        每个测试用例的字段如下：
+          {
+            "title": "用例标题（动词+对象，如'正常登录成功'、'密码错误时登录失败'）",
+            "module": "所属功能模块",
+            "precondition": "前置条件（如'用户已注册并登录'，无则填'无'）",
+            "steps": "测试步骤（多步用\\n分隔，每步以数字序号开头）",
+            "expected": "预期结果（明确可验证，如'跳转首页，Toast提示登录成功'）",
+            "priority": "P0 / P1 / P2",
+            "type": "正向 / 反向 / 边界 / 异常",
+            "notes": "备注（无则留空）"
+          }
+
+        ## 覆盖原则
+        - P0：核心主流程正向用例，直接影响用户核心操作
+        - P1：重要功能路径，包含主要反向/异常场景
+        - P2：边界值、兼容性、极端输入场景
+        - 每个需求点至少覆盖：1条正向 + 1条反向或异常 + 1条边界（如适用）
+
+        ## 描述风格
+        - 步骤语言简洁清晰，面向测试执行人员
+        - 预期结果具体可测量，避免"正常显示"等模糊表述
+        - 与知识库样本的风格、粒度、术语保持一致
+
+# ── write_test_cases 工具的技术参数（与 prompt 解耦） ─────────────────────────
+test_generator:
+  output_dir: "./outputs/test_cases"
+  temperature: 0.3
+  max_tokens: 8192
+  # user_template 变量：{kb_section} {requirement} {module}
+  user_template: |
+    {kb_section}需求文档内容：
+    {requirement}
+
+    模块名称：{module}
+
+    请为上述需求生成完整的测试用例，输出 JSON 数组。
+  # Excel 列定义（顺序即输出列顺序，可自定义列名和宽度）
+  columns:
+    - {name: "用例编号", width: 12}
+    - {name: "所属模块", width: 14}
+    - {name: "用例标题", width: 30}
+    - {name: "前置条件", width: 20}
+    - {name: "测试步骤", width: 40}
+    - {name: "预期结果", width: 30}
+    - {name: "优先级", width: 8}
+    - {name: "用例类型", width: 10}
+    - {name: "备注", width: 16}
 
 api:
   host: "0.0.0.0"

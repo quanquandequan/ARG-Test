@@ -54,9 +54,14 @@ def get_agent() -> ReActAgent:
 
     llm = get_singleton_llm()
     engine = get_retrieval_engine()
+    from omegaconf import OmegaConf
+
     cfg_agent = get_config().get("agent", {})
-    tool_names = list(cfg_agent.get("tools", ["knowledge_search", "web_search"]))
-    tools = build_agent_tools(engine, tool_names)
+    # tool_configs is a list of strings OR dicts (OmegaConf DictConfig).
+    # OmegaConf.to_container converts it to plain Python list/dict for tool_factory.
+    raw_tools = cfg_agent.get("tools", ["knowledge_search", "web_search", "write_test_cases"])
+    tool_configs = OmegaConf.to_container(raw_tools, resolve=True)
+    tools = build_agent_tools(engine, tool_configs, llm=llm)
     return ReActAgent(
         llm=llm,
         tools=tools,
