@@ -42,6 +42,7 @@ class OpenAIEmbedder(BaseEmbedder):
         self._batch_size = batch_size or cfg.get("batch_size", 32)
         self._normalize = normalize if normalize is not None else cfg.get("normalize", True)
         self._dim_override = dim_override
+        self._client = None
 
     def load(self) -> None:
         if not self._api_key:
@@ -50,16 +51,19 @@ class OpenAIEmbedder(BaseEmbedder):
     def is_loaded(self) -> bool:
         return bool(self._api_key)
 
+    def _get_client(self):
+        if self._client is None:
+            from openai import OpenAI
+            kwargs = {"api_key": self._api_key}
+            if self._base_url:
+                kwargs["base_url"] = self._base_url
+            self._client = OpenAI(**kwargs)
+        return self._client
+
     def embed_documents(self, texts: list[str]) -> np.ndarray:
         if not texts:
             raise EmbeddingError("Cannot embed empty text list")
-
-        from openai import OpenAI
-
-        client_kwargs = {"api_key": self._api_key}
-        if self._base_url:
-            client_kwargs["base_url"] = self._base_url
-        client = OpenAI(**client_kwargs)
+        client = self._get_client()
 
         vectors_list: list[np.ndarray] = []
         for i in range(0, len(texts), self._batch_size):

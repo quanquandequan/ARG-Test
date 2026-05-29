@@ -21,7 +21,6 @@ suppress_grpc_stderr()
 
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
-import os  # noqa: E402
 import readline  # noqa: E402, F401 — init readline/libedit for CJK backspace
 import sys  # noqa: E402
 from pathlib import Path  # noqa: E402

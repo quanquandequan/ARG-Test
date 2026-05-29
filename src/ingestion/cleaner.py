@@ -27,7 +27,6 @@ class TextCleaner:
 
     # Chinese quotes normalization
     _QUOTE_PAIRS = [
-        ("“", "”"),  # " "
         ("‘", "’"),  # ' '
         ("「", "」"),  # 「 」
         ("『", "』"),  # 『 』

@@ -28,6 +28,7 @@ class DashScopeReranker(BaseReranker):
         cfg = get_config().get("reranker", {})
         self._api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "")
         self._model = model or cfg.get("model", "qwen3-rerank")
+        self._client = None
 
     def load(self) -> None:
         if not self._api_key:
@@ -35,6 +36,11 @@ class DashScopeReranker(BaseReranker):
 
     def is_loaded(self) -> bool:
         return bool(self._api_key)
+
+    def _get_client(self):
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=30)
+        return self._client
 
     async def rerank(
         self,
@@ -61,17 +67,16 @@ class DashScopeReranker(BaseReranker):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    _DASHSCOPE_RERANK_URL,
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=body,
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await self._get_client().post(
+                _DASHSCOPE_RERANK_URL,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            resp.raise_for_status()
+            data = resp.json()
         except httpx.HTTPError as e:
             raise RerankerError(f"DashScope reranker API error: {e}") from e
 

@@ -37,6 +37,7 @@ class OpenAIReranker(BaseReranker):
         cfg = get_config().get("reranker", {})
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self._model = model or cfg.get("model", "gpt-4o-mini")
+        self._client = None
 
     def load(self) -> None:
         if not self._api_key:
@@ -44,6 +45,12 @@ class OpenAIReranker(BaseReranker):
 
     def is_loaded(self) -> bool:
         return bool(self._api_key)
+
+    def _get_client(self):
+        if self._client is None:
+            from openai import AsyncOpenAI
+            self._client = AsyncOpenAI(api_key=self._api_key)
+        return self._client
 
     async def rerank(
         self,
@@ -62,10 +69,7 @@ class OpenAIReranker(BaseReranker):
         prompt = _RERANK_PROMPT.format(query=query, passages=passages_block)
 
         try:
-            from openai import AsyncOpenAI
-
-            client = AsyncOpenAI(api_key=self._api_key)
-            response = await client.chat.completions.create(
+            response = await self._get_client().chat.completions.create(
                 model=self._model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,

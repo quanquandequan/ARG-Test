@@ -1,6 +1,5 @@
 """Claude API provider via Anthropic SDK."""
 
-import json
 import os
 from typing import AsyncIterator
 

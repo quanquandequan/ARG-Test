@@ -1,11 +1,9 @@
 """Milvus vector store — supports both Lite (dev) and Standalone (production)."""
 
-from time import sleep
-
 import numpy as np
 
 from src.core.config import get_config
-from src.core.exceptions import CollectionNotFoundError, ConnectionError, VectorDBError
+from src.core.exceptions import ConnectionError
 from src.core.logging import get_logger
 from src.vectordb.base import BaseVectorDB, SearchResult
 

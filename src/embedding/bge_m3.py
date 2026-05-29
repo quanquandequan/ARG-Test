@@ -20,14 +20,13 @@ class BgeM3Embedder(BaseEmbedder):
         device: str | None = None,
         batch_size: int | None = None,
         normalize: bool | None = None,
-        use_onnx: bool | None = None,
+
     ):
         cfg = get_config().get("embedding", {})
         self._model_name = model_name or cfg.get("model_name", "BAAI/bge-m3")
         self._device = device or cfg.get("device", "cpu")
         self._batch_size = batch_size or cfg.get("batch_size", 32)
         self._normalize = normalize if normalize is not None else cfg.get("normalize", True)
-        self._use_onnx = use_onnx if use_onnx is not None else cfg.get("use_onnx", False)
         self._model = None
 
     def load(self) -> None:

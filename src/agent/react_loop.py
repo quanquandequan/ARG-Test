@@ -44,11 +44,6 @@ class _ToolResultEvent:
     tool_call: ToolCall
 
 
-@dataclass
-class _ThinkingEvent:
-    content: str
-    iteration: int
-
 
 @dataclass
 class _FinalAnswer:
@@ -66,12 +61,8 @@ class _ForcedAnswer:
     steps: list[AgentStep]
 
 
-@dataclass
-class _ErrorEvent:
-    error: str
 
-
-_Event = _ToolCallEvent | _ToolResultEvent | _ThinkingEvent | _FinalAnswer | _ForcedAnswer | _ErrorEvent
+_Event = _ToolCallEvent | _ToolResultEvent | _FinalAnswer | _ForcedAnswer
 
 # Approximate character count per SSE token chunk.
 _TOKEN_CHUNK_SIZE = 20
@@ -302,13 +293,7 @@ class ReActAgent:
         steps: list[AgentStep] = []
 
         async for event in self._react_core(query, history, temperature, trace_id):
-            if isinstance(event, _ToolCallEvent):
-                pass  # step tracking happens via _ToolResultEvent
-            elif isinstance(event, _ToolResultEvent):
-                pass  # already in event.steps (managed by _react_core)
-            elif isinstance(event, _ThinkingEvent):
-                iterations = event.iteration + 1
-            elif isinstance(event, _FinalAnswer):
+            if isinstance(event, _FinalAnswer):
                 answer = event.text
                 iterations = event.iteration + 1
                 citations = event.citations

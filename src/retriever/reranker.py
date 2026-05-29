@@ -2,8 +2,6 @@
 
 import asyncio
 
-import numpy as np
-
 from src.core.config import get_config
 from src.core.exceptions import RerankerError
 from src.core.logging import get_logger

@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 import jieba
 
 from src.core.config import get_config
-from src.core.exceptions import ChunkingError
 
 
 @dataclass
