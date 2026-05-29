@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from src.api.dependencies import get_agent
+from src.api import dependencies as deps
 from src.api.schemas.query import AgentStepOut, QueryRequest, QueryResponse
 from src.llm.types import Message
 
@@ -12,7 +12,7 @@ router = APIRouter(tags=["query"])
 
 @router.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest):
-    agent = get_agent()
+    agent = deps.get_agent()
 
     history = None
     if req.history:
@@ -48,7 +48,7 @@ async def query(req: QueryRequest):
 
 @router.post("/query/stream")
 async def query_stream(req: QueryRequest):
-    agent = get_agent()
+    agent = deps.get_agent()
 
     history = None
     if req.history:

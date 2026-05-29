@@ -1,11 +1,21 @@
-"""ReAct Agent — Think-Act-Observe loop with tool calling."""
+"""ReAct Agent — Think-Act-Observe loop with tool calling.
+
+Both ``run()`` (non-streaming) and ``run_stream()`` (SSE streaming) share a
+single ``_react_core()`` async generator that yields typed event dataclasses.
+This eliminates the previous ~80% code duplication and the double-LLM-call
+in the streaming path (the final answer is now chunked from the cached
+``generate_chat`` response instead of calling ``generate_chat_stream`` again).
+"""
+
+from __future__ import annotations
 
 import asyncio
 import json
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
 
 from src.agent.base_tool import BaseTool
 from src.agent.history import truncate_history
@@ -17,8 +27,58 @@ from src.llm.types import Message, ToolCall
 
 logger = get_logger(__name__)
 
+# ── Internal event types yielded by _react_core ───────────────────────────
+
+
+@dataclass
+class _ToolCallEvent:
+    tool_names: list[str]
+    iteration: int
+
+
+@dataclass
+class _ToolResultEvent:
+    tool_name: str
+    result: str
+    duration_ms: float
+    tool_call: ToolCall
+
+
+@dataclass
+class _ThinkingEvent:
+    content: str
+    iteration: int
+
+
+@dataclass
+class _FinalAnswer:
+    text: str
+    iteration: int
+    citations: list[Citation]
+    processing_stages: dict[str, float]
+    steps: list[AgentStep]
+
+
+@dataclass
+class _ForcedAnswer:
+    text: str
+    processing_stages: dict[str, float]
+    steps: list[AgentStep]
+
+
+@dataclass
+class _ErrorEvent:
+    error: str
+
+
+_Event = _ToolCallEvent | _ToolResultEvent | _ThinkingEvent | _FinalAnswer | _ForcedAnswer | _ErrorEvent
+
+# Approximate character count per SSE token chunk.
+_TOKEN_CHUNK_SIZE = 20
+
+
 class ReActAgent:
-    """ReAct-pattern Agent: Think → Act → Observe → Repeat → Answer."""
+    """ReAct-pattern Agent: Think -> Act -> Observe -> Repeat -> Answer."""
 
     def __init__(
         self,
@@ -43,6 +103,8 @@ class ReActAgent:
     def tool_names(self) -> list[str]:
         return self._registry.names()
 
+    # ── Message building ─────────────────────────────────────────────────
+
     def _build_messages(self, history: list[Message] | None, query: str) -> list[Message]:
         """Assemble system + truncated history + current user query."""
         from datetime import date
@@ -58,89 +120,39 @@ class ReActAgent:
             + [Message(role="user", content=query)]
         )
 
-    async def _execute_tool_safe(self, tc: ToolCall, trace_id: str) -> tuple[ToolCall, str, float]:
-        """Execute one tool call and return (tc, result, duration_ms)."""
-        t0 = time.perf_counter()
-        try:
-            tool = self._registry.get(tc.name)
-            result = await tool.execute(**tc.arguments)
-        except Exception as e:
-            result = f"工具执行错误: {e}"
-            logger.warning("tool_execution_error", trace_id=trace_id, tool=tc.name, error=str(e))
-        duration_ms = (time.perf_counter() - t0) * 1000
-        return tc, result, duration_ms
+    # ── Core ReAct loop (shared by run and run_stream) ───────────────────
 
-    async def _run_tool_round(
-        self,
-        tool_calls: list[ToolCall],
-        messages: list[Message],
-        trace_id: str,
-    ) -> list[tuple[ToolCall, str, float]]:
-        """Execute all tool calls concurrently, append results to messages.
-
-        Returns a list of (tc, result, duration_ms) tuples.
-        """
-        tc_results: list[tuple[ToolCall, str, float]] = list(
-            await asyncio.gather(
-                *[self._execute_tool_safe(tc, trace_id) for tc in tool_calls]
-            )
-        )
-        for tc, result, _ in tc_results:
-            messages.append(Message(
-                role="tool",
-                content=result,
-                tool_call_id=tc.id,
-                name=tc.name,
-            ))
-        return tc_results
-
-    async def _stream_final_answer(
-        self,
-        messages: list[Message],
-        temperature: float | None,
-    ) -> AsyncIterator[str]:
-        """Stream final answer tokens then emit a consolidated answer event."""
-        full_text = ""
-        async for block in self._llm.generate_chat_stream(
-            messages=messages,
-            tools=None,
-            tool_choice=None,
-            temperature=temperature,
-        ):
-            if block.type == "text" and block.text:
-                full_text += block.text
-                token_payload = json.dumps({"text": block.text}, ensure_ascii=False)
-                yield f"event: token\ndata: {token_payload}\n\n"
-
-        answer_payload = json.dumps({"text": full_text}, ensure_ascii=False)
-        yield f"event: answer\ndata: {answer_payload}\n\n"
-
-    async def run(
+    async def _react_core(
         self,
         query: str,
         history: list[Message] | None = None,
         temperature: float | None = None,
-        trace_id: str | None = None,
-    ) -> AgentResult:
-        trace_id = trace_id or str(uuid.uuid4())
+        trace_id: str = "",
+    ) -> AsyncGenerator[_Event]:
+        """Unified ReAct loop that yields typed events.
 
+        Both ``run()`` and ``run_stream()`` consume these events, eliminating
+        duplicated loop logic and the double-LLM-call in the streaming path.
+        """
         messages = self._build_messages(history, query)
         tool_defs = self._registry.definitions()
-        steps: list[AgentStep] = []
         processing_stages: dict[str, float] = {}
+        steps: list[AgentStep] = []
         run_t0 = time.perf_counter()
+        use_tools = bool(tool_defs)
 
         for i in range(self._max_iterations):
             iter_t0 = time.perf_counter()
 
             response = await self._llm.generate_chat(
                 messages=messages,
-                tools=tool_defs if tool_defs else None,
-                tool_choice="auto" if tool_defs else None,
+                tools=tool_defs if use_tools else None,
+                tool_choice="auto" if use_tools else None,
                 temperature=temperature,
             )
 
             if response.stop_reason == "tool_use" and response.tool_calls:
+                # ── Tool call iteration ──
                 llm_ms = (time.perf_counter() - iter_t0) * 1000
                 logger.info(
                     "agent_tool_calls",
@@ -150,15 +162,37 @@ class ReActAgent:
                     llm_ms=round(llm_ms, 1),
                 )
 
+                yield _ToolCallEvent(
+                    tool_names=[tc.name for tc in response.tool_calls],
+                    iteration=i,
+                )
+
                 messages.append(Message(
                     role="assistant",
                     content=response.content,
                     tool_calls=response.tool_calls,
                 ))
 
-                tc_results = await self._run_tool_round(
-                    response.tool_calls, messages, trace_id
-                )
+                # Execute all tool calls concurrently
+                async def _safe_execute(tc: ToolCall) -> tuple[ToolCall, str, float]:
+                    t0 = time.perf_counter()
+                    try:
+                        tool = self._registry.get(tc.name)
+                        result = await tool.execute(**tc.arguments)
+                    except Exception as e:
+                        result = f"工具执行错误: {e}"
+                        logger.warning(
+                            "tool_execution_error",
+                            trace_id=trace_id,
+                            tool=tc.name,
+                            error=str(e),
+                        )
+                    dur = (time.perf_counter() - t0) * 1000
+                    return tc, result, dur
+
+                tc_results = list(await asyncio.gather(
+                    *[_safe_execute(tc) for tc in response.tool_calls]
+                ))
 
                 for tc, result, dur_ms in tc_results:
                     processing_stages[f"iter{i}.{tc.name}"] = round(dur_ms, 1)
@@ -168,17 +202,32 @@ class ReActAgent:
                         tool_result=result,
                         duration_ms=round(dur_ms, 1),
                     ))
+                    messages.append(Message(
+                        role="tool",
+                        content=result,
+                        tool_call_id=tc.id,
+                        name=tc.name,
+                    ))
+                    yield _ToolResultEvent(
+                        tool_name=tc.name,
+                        result=result,
+                        duration_ms=round(dur_ms, 1),
+                        tool_call=tc,
+                    )
 
             else:
+                # ── Final answer ──
                 iter_ms = (time.perf_counter() - iter_t0) * 1000
                 steps.append(AgentStep(
                     step_index=i,
                     thinking=response.content,
                     duration_ms=round(iter_ms, 1),
                 ))
+
                 citations = self._extract_citations(response.content)
                 total_ms = (time.perf_counter() - run_t0) * 1000
                 processing_stages["total"] = round(total_ms, 1)
+
                 logger.info(
                     "agent_answer",
                     trace_id=trace_id,
@@ -186,17 +235,22 @@ class ReActAgent:
                     citations=len(citations),
                     total_ms=round(total_ms, 1),
                 )
-                return AgentResult(
-                    answer=response.content,
-                    steps=steps,
-                    iterations=i + 1,
+
+                yield _FinalAnswer(
+                    text=response.content,
+                    iteration=i,
                     citations=citations,
                     processing_stages=processing_stages,
-                    trace_id=trace_id,
+                    steps=steps,
                 )
+                return
 
         # Max iterations exceeded — force a final answer without tools
-        logger.warning("agent_max_iterations", trace_id=trace_id, max=self._max_iterations)
+        logger.warning(
+            "agent_max_iterations",
+            trace_id=trace_id,
+            max=self._max_iterations,
+        )
         messages.append(Message(
             role="user",
             content="请综合以上所有工具的结果，给出最终答案。如果信息不足，请说明。",
@@ -206,10 +260,71 @@ class ReActAgent:
         )
         total_ms = (time.perf_counter() - run_t0) * 1000
         processing_stages["total"] = round(total_ms, 1)
-        return AgentResult(
-            answer=response.content,
+
+        yield _ForcedAnswer(
+            text=response.content,
+            processing_stages=processing_stages,
             steps=steps,
-            iterations=self._max_iterations,
+        )
+
+    # ── Token streaming helper ───────────────────────────────────────────
+
+    @staticmethod
+    async def _yield_tokens(text: str) -> AsyncGenerator[str]:
+        """Yield cached response text as SSE token events.
+
+        Avoids a second LLM call by chunking the already-received response
+        text into token-sized pieces.
+        """
+        for start in range(0, len(text), _TOKEN_CHUNK_SIZE):
+            chunk = text[start : start + _TOKEN_CHUNK_SIZE]
+            token_payload = json.dumps({"text": chunk}, ensure_ascii=False)
+            yield f"event: token\ndata: {token_payload}\n\n"
+            await asyncio.sleep(0)
+
+        answer_payload = json.dumps({"text": text}, ensure_ascii=False)
+        yield f"event: answer\ndata: {answer_payload}\n\n"
+
+    # ── Public API ───────────────────────────────────────────────────────
+
+    async def run(
+        self,
+        query: str,
+        history: list[Message] | None = None,
+        temperature: float | None = None,
+        trace_id: str | None = None,
+    ) -> AgentResult:
+        trace_id = trace_id or str(uuid.uuid4())
+        answer = ""
+        iterations = 0
+        citations: list[Citation] = []
+        processing_stages: dict[str, float] = {}
+        steps: list[AgentStep] = []
+
+        async for event in self._react_core(query, history, temperature, trace_id):
+            if isinstance(event, _ToolCallEvent):
+                pass  # step tracking happens via _ToolResultEvent
+            elif isinstance(event, _ToolResultEvent):
+                pass  # already in event.steps (managed by _react_core)
+            elif isinstance(event, _ThinkingEvent):
+                iterations = event.iteration + 1
+            elif isinstance(event, _FinalAnswer):
+                answer = event.text
+                iterations = event.iteration + 1
+                citations = event.citations
+                processing_stages = event.processing_stages
+                steps = event.steps
+            elif isinstance(event, _ForcedAnswer):
+                answer = event.text
+                iterations = self._max_iterations
+                processing_stages = event.processing_stages
+                steps = event.steps
+
+        return AgentResult(
+            answer=answer,
+            steps=steps,
+            iterations=iterations,
+            citations=citations,
             processing_stages=processing_stages,
             trace_id=trace_id,
         )
@@ -220,82 +335,44 @@ class ReActAgent:
         history: list[Message] | None = None,
         temperature: float | None = None,
         trace_id: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str]:
         """Stream agent activity as SSE-format events.
 
-        Implementation note: uses generate_chat_stream for the final answer so
-        that the LLM is called exactly once per iteration (no double-call).
-        For tool-call detection we still use generate_chat (non-streaming)
-        because streaming tool-call parsing is provider-specific and error-prone;
-        only the final text answer is truly streamed token-by-token.
+        Uses ``generate_chat`` (non-streaming) for tool-call detection and
+        chunks the cached response for token-by-token output, avoiding the
+        extra LLM call that the previous implementation required.
         """
         trace_id = trace_id or str(uuid.uuid4())
-
-        messages = self._build_messages(history, query)
-        tool_defs = self._registry.definitions()
 
         yield (
             f"event: start\n"
             f"data: {json.dumps({'trace_id': trace_id}, ensure_ascii=False)}\n\n"
         )
 
-        for i in range(self._max_iterations):
-            # Use generate_chat to detect tool calls vs. final answer.
-            # When the LLM returns a final answer (no tool calls), we re-invoke
-            # via generate_chat_stream to stream that answer token-by-token.
-            # This means one extra non-streaming call per tool-call iteration,
-            # but only a single non-streaming + one streaming call for the final answer.
-            response = await self._llm.generate_chat(
-                messages=messages,
-                tools=tool_defs if tool_defs else None,
-                tool_choice="auto" if tool_defs else None,
-                temperature=temperature,
-            )
-
-            if response.stop_reason == "tool_use" and response.tool_calls:
-                tool_names = [tc.name for tc in response.tool_calls]
-                tc_payload = {"tools": tool_names, "iteration": i}
+        async for event in self._react_core(query, history, temperature, trace_id):
+            if isinstance(event, _ToolCallEvent):
+                tc_payload = {"tools": event.tool_names, "iteration": event.iteration}
                 yield (
                     f"event: tool_call\n"
                     f"data: {json.dumps(tc_payload, ensure_ascii=False)}\n\n"
                 )
 
-                messages.append(Message(
-                    role="assistant",
-                    content=response.content,
-                    tool_calls=response.tool_calls,
-                ))
-
-                tc_results = await self._run_tool_round(
-                    response.tool_calls, messages, trace_id
+            elif isinstance(event, _ToolResultEvent):
+                payload = {
+                    "tool": event.tool_name,
+                    "result_len": len(event.result),
+                    "duration_ms": event.duration_ms,
+                }
+                yield (
+                    f"event: tool_result\n"
+                    f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 )
 
-                for tc, result, dur_ms in tc_results:
-                    payload = {
-                        "tool": tc.name,
-                        "result_len": len(result),
-                        "duration_ms": round(dur_ms, 1),
-                    }
-                    yield (
-                        f"event: tool_result\n"
-                        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                    )
+            elif isinstance(event, (_FinalAnswer, _ForcedAnswer)):
+                async for token_event in self._yield_tokens(event.text):
+                    yield token_event
 
-            else:
-                # LLM wants to give a final answer — stream it token-by-token.
-                # We discard response.content here and re-stream from scratch,
-                # because generate_chat above buffered the whole response.
-                async for event in self._stream_final_answer(messages, temperature):
-                    yield event
-                return
-
-        # Max iterations: force summarisation, streamed
-        messages.append(Message(
-            role="user",
-            content="请综合以上所有工具的结果，给出最终答案。如果信息不足，请说明。",
-        ))
-        async for event in self._stream_final_answer(messages, temperature):
-            yield event
+    # ── Citation extraction ──────────────────────────────────────────────
 
     @staticmethod
     def _extract_citations(text: str) -> list[Citation]:

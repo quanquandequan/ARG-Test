@@ -14,13 +14,10 @@ class ToolCall:
 
 @dataclass
 class ContentBlock:
-    """A block in a message — text, tool_use, or tool_result."""
+    """A streaming content block — currently only text is used."""
 
-    type: str  # "text", "tool_use", "tool_result"
+    type: str  # "text"
     text: str = ""
-    tool_call_id: str = ""
-    tool_name: str = ""
-    tool_input: dict | None = None
 
 
 @dataclass

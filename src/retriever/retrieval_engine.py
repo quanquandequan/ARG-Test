@@ -1,6 +1,7 @@
-"""Retrieval engine — retrieve → rerank → chunks."""
+"""Retrieval engine — retrieve -> rerank -> chunks."""
 
-from src.core.config import get_config
+import asyncio
+
 from src.retriever.dense_retriever import DenseRetriever
 from src.retriever.reranker_base import BaseReranker
 from src.vectordb.base import SearchResult
@@ -30,18 +31,19 @@ class RetrievalEngine:
     async def search(
         self,
         query: str,
-        top_k: int | None = None,
-        final_k: int | None = None,
+        top_k: int = 20,
+        final_k: int = 5,
         filters: dict | None = None,
     ) -> list[SearchResult]:
-        """Run retrieve → rerank and return ranked chunks."""
-        cfg = get_config().get("retrieval", {})
-        actual_top_k = top_k or cfg.get("top_k", 20)
-        actual_final_k = final_k or cfg.get("final_k", 5)
-
-        candidates = self._dense_retriever.retrieve(
-            query, top_k=actual_top_k, filters=filters
+        """Run retrieve -> rerank and return ranked chunks."""
+        # Wrap synchronous retrieve (embedding + vector search) in to_thread
+        # so it does not block the async event loop.
+        candidates = await asyncio.to_thread(
+            self._dense_retriever.retrieve,
+            query,
+            top_k,
+            filters,
         )
         if not candidates:
             return []
-        return await self._reranker.rerank(query, candidates, top_k=actual_final_k)
+        return await self._reranker.rerank(query, candidates, top_k=final_k)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from src.api.dependencies import get_singleton_embedder, get_singleton_vectordb
+from src.api import dependencies as deps
 from src.api.schemas.ingestion import IngestResponse
 from src.core.exceptions import IngestionError, RAGPipelineError
 from src.core.logging import get_logger
@@ -43,11 +43,11 @@ async def ingest_document(file: UploadFile = File(...)):
         if not chunks:
             raise HTTPException(status_code=400, detail="No content chunks produced")
 
-        embedder = get_singleton_embedder()
+        embedder = deps.get_singleton_embedder()
         chunk_texts = [c.content for c in chunks]
         vectors = embedder.embed_documents(chunk_texts)
 
-        vectordb = get_singleton_vectordb()
+        vectordb = deps.get_singleton_vectordb()
         rows = []
         for chunk, vec in zip(chunks, vectors):
             rows.append(
@@ -102,6 +102,6 @@ def _rollback(vectordb, doc_id: str | None) -> None:
 
 @router.delete("/{document_id}")
 async def delete_document(document_id: str):
-    vectordb = get_singleton_vectordb()
+    vectordb = deps.get_singleton_vectordb()
     deleted = vectordb.delete_by_document_id(document_id)
     return {"document_id": document_id, "deleted_chunks": deleted}

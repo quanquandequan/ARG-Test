@@ -24,16 +24,19 @@ class OpenAIProvider(BaseLLM):
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self._model = model or cfg.get("model", "gpt-4o")
         self._base_url = base_url or cfg.get("base_url")
+        self._client = None
 
-    def _build_client(self):
-        from openai import AsyncOpenAI
+    def _get_client(self):
+        if self._client is None:
+            from openai import AsyncOpenAI
 
-        kwargs = {"api_key": self._api_key}
-        if self._base_url:
-            kwargs["base_url"] = self._base_url
-        return AsyncOpenAI(**kwargs)
+            kwargs = {"api_key": self._api_key}
+            if self._base_url:
+                kwargs["base_url"] = self._base_url
+            self._client = AsyncOpenAI(**kwargs)
+        return self._client
 
-    # ── Message / tool format conversion ──
+    # -- Message / tool format conversion --
 
     def _messages_to_openai(self, messages: list[Message]) -> list[dict]:
         """Convert internal Message list to OpenAI API format."""
@@ -111,16 +114,18 @@ class OpenAIProvider(BaseLLM):
             },
         )
 
-    # ── Agent interface ──
+    # -- Shared request preparation --
 
-    async def generate_chat(
+    def _build_request_kwargs(
         self,
         messages: list[Message],
-        tools: list[dict] | None = None,
-        tool_choice: str | None = None,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-    ) -> ChatResponse:
+        tools: list[dict] | None,
+        tool_choice: str | None,
+        temperature: float | None,
+        max_tokens: int | None,
+        stream: bool = False,
+    ) -> dict:
+        """Build the kwargs dict for client.chat.completions.create()."""
         cfg = get_config().get("llm", {})
         temperature = temperature if temperature is not None else cfg.get("temperature", 0.3)
         max_tokens = max_tokens or cfg.get("max_tokens", 4096)
@@ -128,16 +133,17 @@ class OpenAIProvider(BaseLLM):
         if not self._api_key:
             raise LLMError("LLM API key not set")
 
-        client = self._build_client()
         converted = self._messages_to_openai(messages)
         converted_tools = self._tools_to_openai(tools)
 
-        kwargs = {
+        kwargs: dict = {
             "model": self._model,
             "messages": converted,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if stream:
+            kwargs["stream"] = True
         if converted_tools:
             kwargs["tools"] = converted_tools
             if tool_choice:
@@ -148,8 +154,23 @@ class OpenAIProvider(BaseLLM):
                 else:
                     kwargs["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
 
+        return kwargs
+
+    # -- Agent interface --
+
+    async def generate_chat(
+        self,
+        messages: list[Message],
+        tools: list[dict] | None = None,
+        tool_choice: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ChatResponse:
+        kwargs = self._build_request_kwargs(
+            messages, tools, tool_choice, temperature, max_tokens
+        )
         try:
-            response = await client.chat.completions.create(**kwargs)
+            response = await self._get_client().chat.completions.create(**kwargs)
         except Exception as e:
             raise LLMError(f"LLM API error: {e}") from e
 
@@ -163,29 +184,11 @@ class OpenAIProvider(BaseLLM):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[ContentBlock]:
-        cfg = get_config().get("llm", {})
-        temperature = temperature if temperature is not None else cfg.get("temperature", 0.3)
-        max_tokens = max_tokens or cfg.get("max_tokens", 4096)
-
-        if not self._api_key:
-            raise LLMError("LLM API key not set")
-
-        client = self._build_client()
-        converted = self._messages_to_openai(messages)
-        converted_tools = self._tools_to_openai(tools)
-
-        kwargs = {
-            "model": self._model,
-            "messages": converted,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True,
-        }
-        if converted_tools:
-            kwargs["tools"] = converted_tools
-
+        kwargs = self._build_request_kwargs(
+            messages, tools, tool_choice, temperature, max_tokens, stream=True
+        )
         try:
-            stream = await client.chat.completions.create(**kwargs)
+            stream = await self._get_client().chat.completions.create(**kwargs)
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield ContentBlock(

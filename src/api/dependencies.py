@@ -1,4 +1,7 @@
-"""FastAPI dependency injection — singleton components."""
+"""FastAPI dependency injection — cached singleton components."""
+
+import sys
+from functools import lru_cache
 
 from src.agent.react_loop import ReActAgent
 from src.agent.tool_factory import build_agent_tools
@@ -13,72 +16,72 @@ from src.retriever.retrieval_engine import RetrievalEngine
 from src.vectordb.base import BaseVectorDB
 from src.vectordb.factory import get_vectordb
 
-_embedder: BaseEmbedder | None = None
-_vectordb: BaseVectorDB | None = None
-_llm: BaseLLM | None = None
-_reranker: BaseReranker | None = None
-_retrieval_engine: RetrievalEngine | None = None
-_agent: ReActAgent | None = None
 
-
+@lru_cache(maxsize=1)
 def get_singleton_embedder() -> BaseEmbedder:
-    global _embedder
-    if _embedder is None:
-        _embedder = get_embedder()
-        _embedder.load()
-    return _embedder
+    embedder = get_embedder()
+    embedder.load()
+    return embedder
 
 
+@lru_cache(maxsize=1)
 def get_singleton_vectordb() -> BaseVectorDB:
-    global _vectordb
-    if _vectordb is None:
-        _vectordb = get_vectordb()
-    return _vectordb
+    return get_vectordb()
 
 
+@lru_cache(maxsize=1)
 def get_singleton_llm() -> BaseLLM:
-    global _llm
-    if _llm is None:
-        _llm = get_llm()
-    return _llm
+    return get_llm()
 
 
+@lru_cache(maxsize=1)
 def get_singleton_reranker() -> BaseReranker:
-    global _reranker
-    if _reranker is None:
-        _reranker = get_reranker()
-    return _reranker
+    return get_reranker()
 
 
+@lru_cache(maxsize=1)
 def get_retrieval_engine() -> RetrievalEngine:
-    global _retrieval_engine
-    if _retrieval_engine is None:
-        embedder = get_singleton_embedder()
-        vectordb = get_singleton_vectordb()
-        reranker = get_singleton_reranker()
-        dense = DenseRetriever(embedder, vectordb)
-        _retrieval_engine = RetrievalEngine(
-            dense_retriever=dense,
-            reranker=reranker,
-        )
-    return _retrieval_engine
+    embedder = get_singleton_embedder()
+    vectordb = get_singleton_vectordb()
+    reranker = get_singleton_reranker()
+    dense = DenseRetriever(embedder, vectordb)
+    return RetrievalEngine(dense_retriever=dense, reranker=reranker)
 
 
+@lru_cache(maxsize=1)
 def get_agent() -> ReActAgent:
-    global _agent
-    if _agent is None:
-        from src.core.config import get_config
+    from src.core.config import get_config
 
-        llm = get_singleton_llm()
-        engine = get_retrieval_engine()
-        cfg_agent = get_config().get("agent", {})
-        tool_names = list(cfg_agent.get("tools", ["knowledge_search", "web_search"]))
-        tools = build_agent_tools(engine, tool_names)
-        _agent = ReActAgent(
-            llm=llm,
-            tools=tools,
-            system_prompt=cfg_agent.get("system_prompt", "") or "",
-            max_iterations=int(cfg_agent.get("max_iterations", 10)),
-            max_history_tokens=int(cfg_agent.get("max_history_tokens", 4000)),
-        )
-    return _agent
+    llm = get_singleton_llm()
+    engine = get_retrieval_engine()
+    cfg_agent = get_config().get("agent", {})
+    tool_names = list(cfg_agent.get("tools", ["knowledge_search", "web_search"]))
+    tools = build_agent_tools(engine, tool_names)
+    return ReActAgent(
+        llm=llm,
+        tools=tools,
+        system_prompt=cfg_agent.get("system_prompt", "") or "",
+        max_iterations=int(cfg_agent.get("max_iterations", 10)),
+        max_history_tokens=int(cfg_agent.get("max_history_tokens", 4000)),
+    )
+
+
+def clear_all_caches() -> None:
+    """Clear all cached singletons. Call between tests for isolation.
+
+    Uses getattr to safely handle monkeypatched functions that may not
+    have a cache_clear method.
+    """
+    _this = sys.modules[__name__]
+    for name in (
+        "get_singleton_embedder",
+        "get_singleton_vectordb",
+        "get_singleton_llm",
+        "get_singleton_reranker",
+        "get_retrieval_engine",
+        "get_agent",
+    ):
+        fn = getattr(_this, name, None)
+        clear = getattr(fn, "cache_clear", None)
+        if clear is not None:
+            clear()

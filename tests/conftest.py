@@ -64,7 +64,7 @@ def _build_test_config() -> DictConfig:
             "agent": {
                 "max_iterations": 5,
                 "max_history_tokens": 2000,
-                "system_prompt": "",
+                "system_prompt": "test",
                 "tools": ["knowledge_search"],
             },
             "api": {

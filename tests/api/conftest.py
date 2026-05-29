@@ -7,40 +7,39 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import src.api.dependencies as deps
-from src.agent.react_loop import ReActAgent
-from src.agent.tools.search_kb import KnowledgeBaseTool
-from src.agent.tools.web_search import WebSearchTool
 from src.api.routers import health, ingestion, query
-from src.retriever.dense_retriever import DenseRetriever
-from src.retriever.retrieval_engine import RetrievalEngine
+
+
+@pytest.fixture(autouse=True)
+def _clear_dep_caches():
+    """Ensure dependency caches are clear before and after each test."""
+    deps.clear_all_caches()
+    yield
+    deps.clear_all_caches()
 
 
 @pytest.fixture
 def wired_singletons(fake_embedder, fake_vectordb, fake_llm, fake_reranker, monkeypatch):
-    """Force `dependencies` module-level singletons to the fakes."""
-    monkeypatch.setattr(deps, "_embedder", fake_embedder, raising=False)
-    monkeypatch.setattr(deps, "_vectordb", fake_vectordb, raising=False)
-    monkeypatch.setattr(deps, "_llm", fake_llm, raising=False)
-    monkeypatch.setattr(deps, "_reranker", fake_reranker, raising=False)
+    """Patch internal factory functions so lru_cache deps build with fakes.
 
-    dense = DenseRetriever(fake_embedder, fake_vectordb)
-    engine = RetrievalEngine(dense_retriever=dense, reranker=fake_reranker)
-    monkeypatch.setattr(deps, "_retrieval_engine", engine, raising=False)
+    Because the routers use ``from src.api.dependencies import get_agent``
+    (a local binding), we cannot monkeypatch ``deps.get_agent`` directly.
+    Instead we patch the leaf factory functions that the lru_cache chain
+    calls internally, then clear the caches so they rebuild with fakes.
+    """
+    monkeypatch.setattr(deps, "get_singleton_embedder", lambda: fake_embedder)
+    monkeypatch.setattr(deps, "get_singleton_vectordb", lambda: fake_vectordb)
+    monkeypatch.setattr(deps, "get_singleton_llm", lambda: fake_llm)
+    monkeypatch.setattr(deps, "get_singleton_reranker", lambda: fake_reranker)
 
-    tools = [
-        KnowledgeBaseTool(engine),
-        WebSearchTool(),
-    ]
-    agent = ReActAgent(llm=fake_llm, tools=tools, system_prompt="test")
-    monkeypatch.setattr(deps, "_agent", agent, raising=False)
+    # Clear caches so the lru_cache functions rebuild using the patched factories.
+    deps.clear_all_caches()
 
     return {
         "embedder": fake_embedder,
         "vectordb": fake_vectordb,
         "llm": fake_llm,
         "reranker": fake_reranker,
-        "retrieval_engine": engine,
-        "agent": agent,
     }
 
 

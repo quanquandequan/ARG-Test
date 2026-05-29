@@ -124,15 +124,3 @@ class ChineseChunker:
                 chunks.append(current)
 
         return chunks
-
-    def _merge_to_previous(self, chunks: list[str]) -> list[str]:
-        """Merge undersized chunks into neighbors."""
-        if len(chunks) <= 1:
-            return chunks
-        merged: list[str] = []
-        for chunk in chunks:
-            if merged and len(chunk) < self.min_chunk_size:
-                merged[-1] += chunk
-            else:
-                merged.append(chunk)
-        return merged

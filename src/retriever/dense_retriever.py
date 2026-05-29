@@ -1,6 +1,5 @@
-"""Dense vector retriever — embed query → search Milvus."""
+"""Dense vector retriever — embed query -> search Milvus."""
 
-from src.core.config import get_config
 from src.core.logging import get_logger
 from src.embedding.base import BaseEmbedder
 from src.vectordb.base import BaseVectorDB, SearchResult
@@ -13,18 +12,13 @@ class DenseRetriever:
         self,
         embedder: BaseEmbedder,
         vectordb: BaseVectorDB,
-        top_k: int | None = None,
-        similarity_threshold: float | None = None,
+        top_k: int = 20,
+        similarity_threshold: float = 0.0,
     ):
-        cfg = get_config().get("retrieval", {})
         self._embedder = embedder
         self._vectordb = vectordb
-        self._top_k = top_k or cfg.get("top_k", 20)
-        self._threshold = (
-            similarity_threshold
-            if similarity_threshold is not None
-            else float(cfg.get("similarity_threshold", 0.0) or 0.0)
-        )
+        self._top_k = top_k
+        self._threshold = similarity_threshold
 
     def retrieve(
         self,

@@ -45,9 +45,5 @@ class LLMError(RAGPipelineError):
     """LLM provider error (API call failure, rate limit, etc.)."""
 
 
-class GenerationError(RAGPipelineError):
-    """Answer generation error."""
-
-
 class ValidationError(RAGPipelineError):
     """Request/response validation error."""

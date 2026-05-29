@@ -22,8 +22,15 @@ class ClaudeProvider(BaseLLM):
         cfg = get_config().get("llm", {})
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         self._model = model or cfg.get("model", "claude-sonnet-4-6")
+        self._client = None
 
-    # ── Message / tool format conversion ──
+    def _get_client(self):
+        if self._client is None:
+            import anthropic
+            self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
+        return self._client
+
+    # -- Message / tool format conversion --
 
     def _messages_to_anthropic(self, messages: list[Message]) -> list[dict]:
         """Convert internal Message list to Anthropic API format."""
@@ -106,18 +113,17 @@ class ClaudeProvider(BaseLLM):
             },
         )
 
-    # ── Agent interface ──
+    # -- Shared request preparation --
 
-    async def generate_chat(
+    def _build_request_kwargs(
         self,
         messages: list[Message],
-        tools: list[dict] | None = None,
-        tool_choice: str | None = None,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-    ) -> ChatResponse:
-        import anthropic
-
+        tools: list[dict] | None,
+        tool_choice: str | None,
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> dict:
+        """Build the kwargs dict for client.messages.create()."""
         cfg = get_config().get("llm", {})
         temperature = temperature if temperature is not None else cfg.get("temperature", 0.3)
         max_tokens = max_tokens or cfg.get("max_tokens", 4096)
@@ -125,12 +131,11 @@ class ClaudeProvider(BaseLLM):
         if not self._api_key:
             raise LLMError("ANTHROPIC_API_KEY not set")
 
-        client = anthropic.AsyncAnthropic(api_key=self._api_key)
         system = self._extract_system_prompt(messages)
         converted = self._messages_to_anthropic(messages)
         converted_tools = self._tools_to_anthropic(tools)
 
-        kwargs = {
+        kwargs: dict = {
             "model": self._model,
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -149,9 +154,24 @@ class ClaudeProvider(BaseLLM):
                     tc = {"type": "tool", "name": tool_choice}
                 kwargs["tool_choice"] = tc
 
+        return kwargs
+
+    # -- Agent interface --
+
+    async def generate_chat(
+        self,
+        messages: list[Message],
+        tools: list[dict] | None = None,
+        tool_choice: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ChatResponse:
+        kwargs = self._build_request_kwargs(
+            messages, tools, tool_choice, temperature, max_tokens
+        )
         try:
-            response = await client.messages.create(**kwargs)
-        except anthropic.APIError as e:
+            response = await self._get_client().messages.create(**kwargs)
+        except Exception as e:
             raise LLMError(f"Claude API error: {e}") from e
 
         return self._parse_anthropic_response(response)
@@ -164,43 +184,14 @@ class ClaudeProvider(BaseLLM):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[ContentBlock]:
-        import anthropic
-
-        cfg = get_config().get("llm", {})
-        temperature = temperature if temperature is not None else cfg.get("temperature", 0.3)
-        max_tokens = max_tokens or cfg.get("max_tokens", 4096)
-
-        if not self._api_key:
-            raise LLMError("ANTHROPIC_API_KEY not set")
-
-        client = anthropic.AsyncAnthropic(api_key=self._api_key)
-        system = self._extract_system_prompt(messages)
-        converted = self._messages_to_anthropic(messages)
-        converted_tools = self._tools_to_anthropic(tools)
-
-        kwargs = {
-            "model": self._model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": converted,
-        }
-        if system:
-            kwargs["system"] = system
-        if converted_tools:
-            kwargs["tools"] = converted_tools
-
+        kwargs = self._build_request_kwargs(
+            messages, tools, tool_choice, temperature, max_tokens
+        )
         try:
-            async with client.messages.stream(**kwargs) as stream:
+            async with self._get_client().messages.stream(**kwargs) as stream:
                 async for event in stream:
-                    if event.type == "content_block_start":
-                        if event.content_block.type == "tool_use":
-                            pass
-                    elif event.type == "content_block_delta":
+                    if event.type == "content_block_delta":
                         if event.delta.type == "text_delta":
                             yield ContentBlock(type="text", text=event.delta.text)
-                        elif event.delta.type == "input_json_delta":
-                            pass
-                    elif event.type == "content_block_stop":
-                        pass
-        except anthropic.APIError as e:
+        except Exception as e:
             raise LLMError(f"Claude API streaming error: {e}") from e

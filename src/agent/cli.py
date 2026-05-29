@@ -13,140 +13,29 @@ Usage:
 
 from __future__ import annotations  # noqa: I001
 
-# -- Suppress C++ gRPC stderr noise via fd-level redirect ----------
-# gRPC C++ core writes GOAWAY / too_many_pings directly to stderr,
-# bypassing Python logging & env vars.  We dup2 stderr through a
-# pipe and spawn a daemon thread to filter the noise.
-import os as _os  # noqa: I001
-import threading as _threading
-import re as _re
+# -- Suppress C++ gRPC stderr noise via fd-level redirect ------------------
+from src.core.utils import suppress_grpc_stderr
 
-_orig_stderr_fd = _os.dup(2)
-_rfd, _wfd = _os.pipe()
-_os.dup2(_wfd, 2)
-_os.close(_wfd)
-
-_GRPC_NOISE = _re.compile(
-    rb"(?:GOAWAY|too_many_pings|chttp2_transport\.cc|grpc_init)"
-)
-
-
-def _stderr_filter():
-    try:
-        while True:
-            chunk = _os.read(_rfd, 65536)  # noqa: F821
-            if not chunk:
-                break
-            clean = b"\n".join(
-                line
-                for line in chunk.split(b"\n")
-                if line.strip() and not _GRPC_NOISE.search(line)
-            )
-            if clean:
-                _os.write(_orig_stderr_fd, clean + b"\n")
-    except OSError:
-        pass
-
-
-_threading.Thread(target=_stderr_filter, daemon=True).start()
-del _re, _threading, _rfd, _wfd
-# -----------------------------------------------------------------
+suppress_grpc_stderr()
+# --------------------------------------------------------------------------
 
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
-import json  # noqa: E402
 import os  # noqa: E402
 import readline  # noqa: E402, F401 — init readline/libedit for CJK backspace
 import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+from src.core.utils import format_answer, load_dotenv, parse_sse_event  # noqa: E402
+
+# Re-export for backward compatibility (tests import from cli)
+_format_answer = format_answer
+_parse_sse_event = parse_sse_event
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Ensure project root is on sys.path for both `python -m src.agent.cli` and `pip install -e`
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
-
-
-def _display_width(s: str) -> int:
-    """Return display width: CJK chars = 2, ASCII = 1."""
-    import unicodedata
-    w = 0
-    for c in s:
-        w += 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
-    return w
-
-
-def _format_answer(text: str) -> str:
-    """Re-align markdown tables for terminal display (CJK-aware)."""
-    lines = text.split("\n")
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        stripped = lines[i].strip()
-        if stripped.startswith("|") and stripped.count("|") >= 2:
-            rows: list[list[str]] = []
-            while i < len(lines) and lines[i].strip().startswith("|"):
-                cells = [c.strip() for c in lines[i].strip().split("|")]
-                if cells and cells[0] == "":
-                    cells = cells[1:]
-                if cells and cells[-1] == "":
-                    cells = cells[:-1]
-                rows.append(cells)
-                i += 1
-
-            if not rows:
-                continue
-
-            ncols = max(len(r) for r in rows)
-            widths = [0] * ncols
-            for row in rows:
-                for ci, cell in enumerate(row):
-                    if ci < ncols:
-                        widths[ci] = max(widths[ci], _display_width(cell))
-
-            for row in rows:
-                padded = []
-                for ci in range(ncols):
-                    cell = row[ci] if ci < len(row) else ""
-                    pad = widths[ci] - _display_width(cell)
-                    padded.append(cell + " " * pad)
-                out.append("| " + " | ".join(padded) + " |")
-        else:
-            out.append(lines[i])
-            i += 1
-    return "\n".join(out)
-
-
-def _parse_sse_event(raw: str) -> tuple[str, dict | str]:
-    """Return (event_type, data) from a raw SSE block."""
-    event_type = "message"
-    data_str = ""
-    for line in raw.splitlines():
-        if line.startswith("event:"):
-            event_type = line[len("event:"):].strip()
-        elif line.startswith("data:"):
-            data_str = line[len("data:"):].strip()
-    try:
-        return event_type, json.loads(data_str)
-    except (json.JSONDecodeError, ValueError):
-        return event_type, data_str
-
-
-def _load_dotenv():
-    """Load .env file from project root without python-dotenv dependency."""
-    env_path = _PROJECT_ROOT / ".env"
-    if not env_path.is_file():
-        return
-    with open(env_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key, value = key.strip(), value.strip()
-            if value and value[0] in ('"', "'") and value[-1] == value[0]:
-                value = value[1:-1]
-            if key not in os.environ:
-                os.environ[key] = value
 
 
 async def _run_query(args):
@@ -162,7 +51,7 @@ async def _run_query(args):
 
     if args.stream:
         async for event in agent.run_stream(query=args.query):
-            event_type, data = _parse_sse_event(event)
+            event_type, data = parse_sse_event(event)
             if event_type == "token" and isinstance(data, dict):
                 print(data.get("text", ""), end="", flush=True)
             elif event_type == "tool_call" and args.verbose and isinstance(data, dict):
@@ -188,7 +77,7 @@ async def _run_query(args):
         if args.verbose:
             print(f"  trace_id={result.trace_id}  ({result.iterations} 次迭代)\n")
 
-        print(_format_answer(result.answer))
+        print(format_answer(result.answer))
 
         if args.verbose and result.steps:
             print()
@@ -249,7 +138,7 @@ async def _run_chat(args):
             print("Agent: ", end="", flush=True)
             last_answer = ""
             async for event in agent.run_stream(query=query, history=history):
-                event_type, data = _parse_sse_event(event)
+                event_type, data = parse_sse_event(event)
                 if event_type == "token" and isinstance(data, dict):
                     tok = data.get("text", "")
                     last_answer += tok
@@ -270,7 +159,7 @@ async def _run_chat(args):
                             f"   [TOOL] {s.tool_call.name}({s.tool_call.arguments}) "
                             f"→ {s.duration_ms:.0f}ms"
                         )
-            formatted = _format_answer(result.answer)
+            formatted = format_answer(result.answer)
             if formatted.startswith("|"):
                 print(f"Agent:\n{formatted}")
             else:
@@ -283,7 +172,7 @@ async def _run_chat(args):
 
 
 def main():
-    _load_dotenv()
+    load_dotenv(_PROJECT_ROOT)
 
     parser = argparse.ArgumentParser(
         description="RAG Agent CLI — 知识库智能问答",
