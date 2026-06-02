@@ -83,10 +83,12 @@ agent:
 
     ## 工作流程
     1. 分析用户问题，判断需要哪些工具
-    2. 优先调用 knowledge_search 搜索知识库
+    2. 优先调用 knowledge_search 搜索知识库（获取背景或格式参考）
     3. 知识库无法满足时，可尝试 web_search
-    4. 生成测试用例时，先 knowledge_search 获取格式样本，再调用 write_test_cases
-    5. 综合所有信息给出完整回答
+    4. 需求结构化分析：knowledge_search → requirement_parser → requirement_reviewer
+    5. 生成测试用例（快速）：knowledge_search → write_test_cases
+    6. 需求分析报告（人工阅读）：knowledge_search → analyze_requirements
+    7. 综合所有信息给出完整回答
 
     ## 回答规则
     - 使用中文回答
@@ -122,6 +124,170 @@ agent:
         - 需要最新的技术文档或行业标准
 
         注意：知识库是第一优先级，本工具为补充手段。
+
+    # ── Mobile UI Automation tools ────────────────────────────────────────
+    # Uncomment to enable Android automation (requires Appium + mobile extras).
+    # The four tools must always be enabled together; device_tool must run first.
+    # - name: device_tool
+    #   description: |
+    #     管理 Android 设备的 Appium 测试会话。在所有 UI 操作前必须先调用 connect 建立连接。
+    #     支持：connect、disconnect、list_devices、launch_app、install_app。
+    #
+    # - name: screen_tool
+    #   description: |
+    #     获取当前 Android 屏幕状态。优先使用 Appium XML 树，信息不足时自动调用 Qwen VL 截图识别。
+    #     action=get_current_screen 返回结构化元素；action=get_screenshot 保存截图。
+    #
+    # - name: action_tool
+    #   description: |
+    #     在 Android 设备上执行 UI 手势：tap（点击）、input_text（输入）、swipe（滑动）、
+    #     scroll（滚动）、back（返回）等。操作后自动失效屏幕缓存。
+    #
+    # - name: assertion_tool
+    #   description: |
+    #     验证 Android 页面 UI 状态，返回 PASS/FAIL 结果。
+    #     支持：assert_text、assert_not_text、assert_element、assert_clickable、assert_page、assert_checked。
+
+    # ── Requirement Domain ────────────────────────────────────────────────
+    - name: requirement_parser
+      description: |
+        将需求文档解析为结构化 RequirementIR（需求中间表示）。
+        输出字段：功能点（含验收标准/测试提示）、业务规则（IF/THEN）、状态机、数据实体。
+        返回 [IR_FILE=路径]，供 requirement_reviewer 和 test_point_generator 使用。
+
+        调用规范：先 knowledge_search 获取背景，再传入 kb_context。
+        适用：需要精确结构化数据、准备进入测试设计流程时使用。
+
+      system_prompt: |
+        你是一名资深软件测试工程师，专注于需求结构化解析。
+        你的任务是将需求文档转换为 RequirementIR（需求中间表示），以 JSON 格式输出。
+
+        ## 输出格式（严格遵守）
+        只输出 JSON 对象，不加 Markdown 标记。
+
+        JSON 结构：
+        {
+          "module": "模块名",
+          "summary": "核心描述（30字以内）",
+          "actors": [{"name": "角色名", "role": "职责"}],
+          "features": [
+            {
+              "id": "F001", "name": "功能名", "description": "描述",
+              "priority": "P0/P1/P2",
+              "acceptance_criteria": ["具体可测量的验收标准"],
+              "test_hints": ["边界/异常/权限/回归场景提示"],
+              "dependencies": ["F002"]
+            }
+          ],
+          "business_rules": [
+            {"id": "R001", "description": "简述", "condition": "IF...", "outcome": "THEN...", "related_features": ["F001"]}
+          ],
+          "state_machines": [
+            {
+              "entity": "实体名", "states": ["A","B"], "initial_state": "A",
+              "transitions": [{"from_state": "A", "to_state": "B", "trigger": "事件", "guard": ""}]
+            }
+          ],
+          "data_entities": [
+            {"name": "实体名", "fields": [{"name": "字段", "field_type": "string", "constraints": ["max_length=20"], "required": true}]}
+          ],
+          "out_of_scope": ["范围外内容"]
+        }
+
+        ## 原则
+        - acceptance_criteria：具体可验证，避免"正常显示"等模糊描述
+        - test_hints：直接提供边界值、异常场景、权限场景、回归风险提示
+        - business_rules：系统强制约束，IF/THEN 格式
+        - 结合知识库背景，在 test_hints 中标注变更点
+
+    - name: requirement_reviewer
+      description: |
+        对 RequirementIR（或需求原文）进行质量评审，识别歧义、缺口、风险。
+        输出质量评分（0-100）和审查报告。
+
+        调用规范：
+        - 从上一步 requirement_parser 的输出中提取 [IR_FILE=路径] 作为 ir_file 参数
+        - 质量评分 < 70：先澄清问题，再进行测试设计
+        - 质量评分 ≥ 85：可直接进行测试设计
+
+      system_prompt: |
+        你是一名资深测试架构师，专注于需求质量评审。
+        识别歧义、信息缺口和风险，以 JSON 格式输出评审结果。
+
+        输出格式（严格遵守，只输出 JSON 对象）：
+        {
+          "overall_quality": "good | needs_clarification | poor",
+          "score": 85,
+          "ambiguities": [
+            {"id": "A001", "location": "F001", "description": "歧义描述", "suggestion": "澄清建议"}
+          ],
+          "gaps": [
+            {"id": "G001", "description": "缺口描述", "impact": "对测试的影响", "question": "待确认的具体问题？"}
+          ],
+          "risks": [
+            {"area": "区域", "level": "high/medium/low", "description": "描述", "mitigation": "应对策略"}
+          ],
+          "suggestions": ["改进建议1"]
+        }
+
+        评分：good=80-100，needs_clarification=50-79，poor=0-49
+        重点检查：验收标准可测性、错误场景覆盖、权限明确性、状态转换完整性、字段约束完整性
+
+    - name: analyze_requirements
+      description: |
+        对需求文档进行测试视角分析，生成结构化 RequirementGraph（需求图谱）。
+        包含：功能点拆解（含优先级/风险等级/边界条件）、状态转换图、
+        风险点、待澄清问题、测试策略建议。
+        输出 JSON（机器可读）+ Markdown（可读报告）两个文件。
+
+        调用规范：调用前先用 knowledge_search 获取背景信息
+        - 叭嗒 app 功能：搜索 "功能名 测试用例"（了解现有功能逻辑）
+        - 插件/基线/小程序功能：搜索 "功能名 xmind"
+        - 将搜索结果传入 kb_context 参数
+
+        典型流程：analyze_requirements → write_test_cases（利用功能点列表生成用例）
+
+      # analyze_requirements 工具内部调用 LLM 时的提示词。
+      # 变量：{kb_section}=知识库背景, {requirement}=需求文档, {module}=模块名
+      system_prompt: |
+        你是一名资深软件测试工程师，专注于从测试视角分析需求文档。
+        你的任务是将需求文档解析为结构化的 RequirementGraph（需求图谱），以 JSON 格式输出。
+
+        ## 输出格式（严格遵守）
+        只输出 JSON 对象，不加任何 Markdown 标记或解释文字。
+
+        JSON 结构：
+          {
+            "summary": "一句话描述核心功能（30字以内）",
+            "actors": ["参与角色"],
+            "features": [
+              {
+                "id": "F001", "name": "功能名", "description": "描述",
+                "priority": "P0/P1/P2",
+                "risk_level": "high/medium/low",
+                "risk_reason": "高风险时必填",
+                "boundaries": ["边界条件"],
+                "test_focus": ["测试重点"],
+                "dependencies": ["F002"]
+              }
+            ],
+            "state_transitions": [
+              {
+                "entity": "实体名", "states": ["状态A", "状态B"],
+                "transitions": [{"from": "A", "to": "B", "trigger": "事件", "condition": "前提"}]
+              }
+            ],
+            "risks": [{"area": "区域", "level": "high/medium/low", "description": "描述", "suggestion": "建议"}],
+            "clarifications": [{"id": "Q001", "question": "问题?", "context": "背景", "impact": "影响"}],
+            "test_strategy": {"scope": "范围", "focus_areas": ["重点"], "exclusions": [], "suggestion": "建议"}
+          }
+
+        ## 分析原则
+        - features：每个独立的用户操作或系统行为拆为一个 feature
+        - risk_level: high=安全/权限/并发/金融，medium=一般功能，low=纯展示
+        - 结合知识库背景，重点标注变更点和潜在回归风险
+        - clarifications：需求模糊/缺失/矛盾之处，列出具体问题
+        - risks：至少2个，按 level 降序
 
     - name: write_test_cases
       description: |
@@ -167,6 +333,23 @@ agent:
         - 预期结果具体可测量，避免"正常显示"等模糊表述
         - 与知识库样本的风格、粒度、术语保持一致
 
+# ── requirement_parser / reviewer 技术参数 ────────────────────────────────────
+req_parser:
+  output_dir: "./outputs/requirement_ir"
+  temperature: 0.2    # lower = more deterministic schema output
+  max_tokens: 8192
+
+req_reviewer:
+  output_dir: "./outputs/requirement_ir"
+  temperature: 0.3
+  max_tokens: 4096
+
+# ── analyze_requirements 工具的技术参数 ──────────────────────────────────────
+req_analyzer:
+  output_dir: "./outputs/requirements"
+  temperature: 0.3
+  max_tokens: 8192
+
 # ── write_test_cases 工具的技术参数（与 prompt 解耦） ─────────────────────────
 test_generator:
   output_dir: "./outputs/test_cases"
@@ -191,6 +374,25 @@ test_generator:
     - {name: "优先级", width: 8}
     - {name: "用例类型", width: 10}
     - {name: "备注", width: 16}
+
+# ── Mobile UI Automation (Phase 3) ──────────────────────────────────────────
+# Install optional deps first:  pip install -e ".[mobile]"
+# Ensure Appium server is running:  npx appium
+mobile:
+  appium_server_url: "http://localhost:4723"
+  device_name: ""              # e.g. "emulator-5554" or "R5CX1234ABCD"
+  platform_version: ""         # e.g. "14"
+  app_package: ""              # e.g. "com.example.app"
+  app_activity: ""             # e.g. ".MainActivity"
+  new_command_timeout: 300     # seconds before Appium closes idle session
+  screenshot_dir: "./outputs/screenshots"
+
+# Qwen VL — used by screen_tool for visual page analysis (VLM fallback)
+# API key: set DASHSCOPE_API_KEY env var, or fill api_key below
+qwen_vision:
+  model: "qwen-vl-plus"        # or qwen-vl-max for higher accuracy
+  api_key: null                # null → reads DASHSCOPE_API_KEY from env
+  max_tokens: 1024
 
 api:
   host: "0.0.0.0"

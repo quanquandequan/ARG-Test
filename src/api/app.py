@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 
 from src.api.middleware import register_middleware
-from src.api.routers import health, ingestion, query, test_cases
+from src.api.routers import health, ingestion, query, requirements, test_cases
 from src.core.config import get_config, load_config
 from src.core.logging import setup_logging
 
@@ -29,5 +29,6 @@ def create_app(env: str | None = None) -> FastAPI:
     app.include_router(ingestion.router)
     app.include_router(query.router)
     app.include_router(test_cases.router)
+    app.include_router(requirements.router)
 
     return app

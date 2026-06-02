@@ -19,16 +19,40 @@ from collections.abc import Callable
 from typing import Any
 
 from src.agent.base_tool import BaseTool
+from src.agent.tools.analyze_requirements import AnalyzeRequirementsTool
+from src.agent.tools.mobile.action_tool import ActionTool
+from src.agent.tools.mobile.assertion_tool import AssertionTool
+from src.agent.tools.mobile.device_tool import DeviceTool
+from src.agent.tools.mobile.screen_tool import ScreenTool
+from src.agent.tools.requirement_parser import RequirementParserTool
+from src.agent.tools.requirement_reviewer import RequirementReviewerTool
 from src.agent.tools.search_kb import KnowledgeBaseTool
 from src.agent.tools.web_search import WebSearchTool
 from src.agent.tools.write_test_cases import WriteTestCasesTool
 from src.core.logging import get_logger
 from src.llm.base import BaseLLM
+from src.mobile.driver import AppiumDriverManager
 from src.retriever.retrieval_engine import RetrievalEngine
+from src.services.page_cache import PageCache
 
 logger = get_logger(__name__)
 
 _DEFAULT_TOOLS = ("knowledge_search", "web_search")
+
+# Shared mobile singletons — created lazily the first time a mobile tool is built.
+# All four mobile tools reference the same driver manager and page cache so that
+# DeviceTool.connect() is visible to ScreenTool / ActionTool / AssertionTool.
+_shared_driver_manager: AppiumDriverManager | None = None
+_shared_page_cache: PageCache | None = None
+
+
+def _get_mobile_singletons() -> tuple[AppiumDriverManager, PageCache]:
+    global _shared_driver_manager, _shared_page_cache
+    if _shared_driver_manager is None:
+        _shared_driver_manager = AppiumDriverManager()
+    if _shared_page_cache is None:
+        _shared_page_cache = PageCache()
+    return _shared_driver_manager, _shared_page_cache
 
 
 def _parse_tool_config(entry: Any) -> tuple[str, str | None, str | None]:
@@ -70,6 +94,20 @@ def build_agent_tools(
     """
     configs = tool_configs or list(_DEFAULT_TOOLS)
 
+    def _build_qwen_vlm():
+        """Return a QwenVisionProvider if configured, else None."""
+        try:
+            from src.llm.qwen_vision_provider import QwenVisionProvider
+
+            vlm = QwenVisionProvider()
+            if vlm.is_available():
+                return vlm
+            logger.info("qwen_vlm_not_configured_screen_tool_xml_only")
+            return None
+        except Exception as exc:
+            logger.warning("qwen_vlm_init_failed", error=str(exc))
+            return None
+
     def _require_llm(tool_name: str) -> BaseLLM | None:
         if llm is None:
             logger.warning("llm_required_for_tool_skipped", tool=tool_name)
@@ -90,10 +128,58 @@ def build_agent_tools(
             return None
         return WriteTestCasesTool(_llm, system_prompt=sys_prompt or None)
 
+    def _make_analyze_requirements(
+        _desc: str | None, sys_prompt: str | None
+    ) -> BaseTool | None:
+        _llm = _require_llm("analyze_requirements")
+        if _llm is None:
+            return None
+        return AnalyzeRequirementsTool(_llm, system_prompt=sys_prompt or None)
+
+    def _make_requirement_parser(
+        _desc: str | None, sys_prompt: str | None
+    ) -> BaseTool | None:
+        _llm = _require_llm("requirement_parser")
+        if _llm is None:
+            return None
+        return RequirementParserTool(_llm, system_prompt=sys_prompt or None)
+
+    def _make_requirement_reviewer(
+        _desc: str | None, sys_prompt: str | None
+    ) -> BaseTool | None:
+        _llm = _require_llm("requirement_reviewer")
+        if _llm is None:
+            return None
+        return RequirementReviewerTool(_llm, system_prompt=sys_prompt or None)
+
+    def _make_device_tool(_desc: str | None, _sp: str | None) -> BaseTool:
+        driver_mgr, _ = _get_mobile_singletons()
+        return DeviceTool(driver_manager=driver_mgr)
+
+    def _make_screen_tool(_desc: str | None, _sp: str | None) -> BaseTool:
+        driver_mgr, page_cache = _get_mobile_singletons()
+        vlm = _build_qwen_vlm()
+        return ScreenTool(driver_manager=driver_mgr, page_cache=page_cache, vlm=vlm)
+
+    def _make_action_tool(_desc: str | None, _sp: str | None) -> BaseTool:
+        driver_mgr, page_cache = _get_mobile_singletons()
+        return ActionTool(driver_manager=driver_mgr, page_cache=page_cache)
+
+    def _make_assertion_tool(_desc: str | None, _sp: str | None) -> BaseTool:
+        driver_mgr, _ = _get_mobile_singletons()
+        return AssertionTool(driver_manager=driver_mgr)
+
     factories: dict[str, Callable[[str | None, str | None], BaseTool | None]] = {
         "knowledge_search": _make_knowledge_search,
         "web_search": _make_web_search,
         "write_test_cases": _make_write_test_cases,
+        "analyze_requirements": _make_analyze_requirements,
+        "requirement_parser": _make_requirement_parser,
+        "requirement_reviewer": _make_requirement_reviewer,
+        "device_tool": _make_device_tool,
+        "screen_tool": _make_screen_tool,
+        "action_tool": _make_action_tool,
+        "assertion_tool": _make_assertion_tool,
     }
 
     tools: list[BaseTool] = []
