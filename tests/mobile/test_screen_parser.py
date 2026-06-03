@@ -200,12 +200,20 @@ def test_malformed_xml_returns_empty():
 
 def test_has_meaningful_content_true():
     screen = parse_page_source(LOGIN_XML)
-    assert screen.has_meaningful_content(min_elements=3)
+    # Login page has clickable elements → always sufficient regardless of text threshold
+    assert screen.has_meaningful_content(min_text_elements=3)
+
+
+def test_has_meaningful_content_via_clickable():
+    """Clickable elements alone make XML sufficient (no text required)."""
+    screen = parse_page_source(LOGIN_XML)
+    assert screen.has_meaningful_content(min_text_elements=999)
 
 
 def test_has_meaningful_content_false():
     screen = parse_page_source(SPARSE_XML)
-    assert not screen.has_meaningful_content(min_elements=3)
+    # SPARSE_XML has only a View with resource-id — no clickable, no text → fails
+    assert not screen.has_meaningful_content(min_text_elements=3)
 
 
 def test_to_agent_summary_structure():

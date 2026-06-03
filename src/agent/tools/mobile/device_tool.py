@@ -1,11 +1,12 @@
 """DeviceTool — Appium device / session management.
 
 Handles the lifecycle of an Android test session:
-  connect      Open a new Appium session
-  disconnect   Close the current session
-  list_devices List connected ADB devices
-  launch_app   Activate / start an installed app
-  install_app  Push and install an APK
+  connect        Open a new Appium session (never auto-launches an app)
+  disconnect     Close the current session
+  list_devices   List connected ADB devices
+  list_packages  List installed packages on the device (supports keyword filter)
+  launch_app     Activate / start an installed app via activate_app
+  install_app    Push and install an APK
 
 This tool is always called first in any mobile automation scenario.
 """
@@ -25,36 +26,41 @@ class DeviceTool(BaseTool):
     description = (
         "管理 Android 设备的 Appium 测试会话。"
         "支持操作：connect（连接设备）、disconnect（断开）、"
-        "list_devices（列出设备）、launch_app（启动应用）、install_app（安装APK）。"
+        "list_devices（列出ADB设备）、list_packages（查找已安装包名）、"
+        "launch_app（启动应用）、install_app（安装APK）。"
         "在执行任何 UI 操作前，必须先调用 connect 建立连接。"
+        "不知道包名时，先调用 list_packages 搜索，不要猜包名。"
     )
     parameters = {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["connect", "disconnect", "list_devices", "launch_app", "install_app"],
+                "enum": [
+                    "connect", "disconnect", "list_devices",
+                    "list_packages", "launch_app", "install_app",
+                ],
                 "description": "要执行的操作",
             },
             "server_url": {
                 "type": "string",
-                "description": "Appium 服务地址，如 http://localhost:4723（action=connect 时必填）",
+                "description": "Appium 服务地址，如 http://localhost:4723（action=connect 时使用）",
             },
             "device_name": {
                 "type": "string",
-                "description": "设备名称或序列号，如 emulator-5554",
+                "description": "设备序列号，如 emulator-5554（action=connect 时可选，优先读配置）",
             },
             "platform_version": {
                 "type": "string",
-                "description": "Android 版本，如 14",
+                "description": "Android 版本（action=connect 时可选，优先读配置）",
+            },
+            "keyword": {
+                "type": "string",
+                "description": "包名关键字过滤（action=list_packages 时使用，如 bada、iqiyi）",
             },
             "app_package": {
                 "type": "string",
-                "description": "应用包名，如 com.example.app",
-            },
-            "app_activity": {
-                "type": "string",
-                "description": "启动 Activity，如 .MainActivity",
+                "description": "应用包名，如 com.iqiyi.acg（action=launch_app 时使用，可选读配置）",
             },
             "apk_path": {
                 "type": "string",
@@ -78,6 +84,8 @@ class DeviceTool(BaseTool):
             return await self._disconnect()
         if action == "list_devices":
             return await self._list_devices()
+        if action == "list_packages":
+            return await self._list_packages(**kwargs)
         if action == "launch_app":
             return await self._launch_app(**kwargs)
         if action == "install_app":
@@ -95,31 +103,38 @@ class DeviceTool(BaseTool):
         server_url: str = "",
         device_name: str = "",
         platform_version: str = "",
-        app_package: str = "",
-        app_activity: str = "",
         **_,
     ) -> str:
         cfg_mobile = get_config().get("mobile", {})
 
+        # Config values are authoritative; ignore LLM-supplied app_package / app_activity
+        # here — they are only used by launch_app, not during session creation.
         server_url = server_url or cfg_mobile.get("appium_server_url", "http://localhost:4723")
-        device_name = device_name or cfg_mobile.get("device_name", "")
-        platform_version = platform_version or str(cfg_mobile.get("platform_version", ""))
-        app_package = app_package or cfg_mobile.get("app_package", "")
-        app_activity = app_activity or cfg_mobile.get("app_activity", "")
+        # Use config device_name/platform_version; only fall back to args if config is empty
+        device_name = cfg_mobile.get("device_name", "") or device_name
+        platform_version = str(cfg_mobile.get("platform_version", "")) or platform_version
 
         caps: dict = {
             "platformName": "Android",
             "appium:automationName": "UIAutomator2",
             "appium:newCommandTimeout": int(cfg_mobile.get("new_command_timeout", 300)),
+            # Do NOT set appPackage / appActivity here.
+            # Including them causes Appium to auto-launch the app via `am start-activity`,
+            # which fails for non-exported Activities (SecurityException on EMUI etc.).
+            # App launch is handled separately via launch_app / activate_app.
         }
         if device_name:
             caps["appium:deviceName"] = device_name
         if platform_version:
             caps["appium:platformVersion"] = platform_version
-        if app_package:
-            caps["appium:appPackage"] = app_package
-        if app_activity:
-            caps["appium:appActivity"] = app_activity
+
+        # EMUI / 华为设备：避免每次弹"安装确认"弹窗
+        if cfg_mobile.get("skip_server_installation", False):
+            caps["appium:skipServerInstallation"] = True
+        if cfg_mobile.get("no_reset", False):
+            caps["appium:noReset"] = True
+        if cfg_mobile.get("auto_grant_permissions", False):
+            caps["appium:autoGrantPermissions"] = True
 
         try:
             await self._mgr.connect(server_url=server_url, caps=caps)
@@ -147,15 +162,20 @@ class DeviceTool(BaseTool):
     async def _launch_app(
         self,
         app_package: str = "",
-        app_activity: str = "",
         **_,
     ) -> str:
         if not self._mgr.is_connected():
             return "错误：请先调用 connect 建立设备连接。"
+
+        # Fall back to YAML config when LLM omits the package name
         if not app_package:
-            return "错误：必须提供 app_package 参数。"
+            cfg_mobile = get_config().get("mobile", {})
+            app_package = cfg_mobile.get("app_package", "")
+        if not app_package:
+            return "错误：必须提供 app_package 参数（或在 mobile.app_package 配置中设置）。"
         try:
-            await self._mgr.launch_app(app_package, app_activity)
+            # launch_app uses activate_app internally — no SecurityException risk
+            await self._mgr.launch_app(app_package)
             activity = await self._mgr.get_current_activity()
             return f"应用 {app_package} 已启动，当前 Activity：{activity or '未知'}"
         except Exception as e:

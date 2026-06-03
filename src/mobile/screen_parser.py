@@ -101,11 +101,23 @@ class ParsedScreen:
             "elements": [e.to_dict() for e in visible],
         }
 
-    def has_meaningful_content(self, min_elements: int = 3) -> bool:
-        """True if XML tree has enough info to avoid needing VLM fallback."""
+    def has_meaningful_content(self, min_text_elements: int = 1) -> bool:
+        """True if the XML tree is rich enough to skip VLM fallback.
+
+        XML is considered sufficient when EITHER condition holds:
+          - There is at least one clickable element (we can locate
+            buttons / inputs for action_tool even without text), OR
+          - The number of visible elements that carry text or content_desc
+            reaches ``min_text_elements``.
+
+        Set ``min_text_elements=0`` to always trust XML (VLM never auto-fires).
+        """
         visible = [e for e in self.elements if e.is_visible]
+        has_clickable = any(e.clickable for e in visible)
+        if has_clickable:
+            return True
         with_text = [e for e in visible if e.text or e.content_desc]
-        return len(with_text) >= min_elements
+        return len(with_text) >= min_text_elements
 
 
 def parse_page_source(xml_str: str) -> ParsedScreen:

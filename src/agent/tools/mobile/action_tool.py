@@ -19,7 +19,6 @@ from __future__ import annotations
 from src.agent.base_tool import BaseTool
 from src.core.logging import get_logger
 from src.mobile.driver import AppiumDriverManager
-from src.mobile.screen_parser import parse_page_source
 from src.services.page_cache import PageCache
 
 logger = get_logger(__name__)
@@ -129,8 +128,7 @@ class ActionTool(BaseTool):
     ) -> tuple[int, int] | None:
         """Resolve element coordinates.  Returns None if nothing found."""
         if target:
-            xml = await self._mgr.get_page_source()
-            parsed = parse_page_source(xml)
+            parsed = await self._mgr.get_parsed_screen()
 
             if target_type == "id":
                 el = parsed.find_by_resource_id(target)

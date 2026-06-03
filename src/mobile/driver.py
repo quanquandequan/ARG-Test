@@ -58,7 +58,7 @@ class AppiumDriverManager:
         def _connect():
             try:
                 from appium import webdriver
-                from appium.options import AppiumOptions
+                from appium.options.common.base import AppiumOptions
             except ImportError as e:
                 raise RuntimeError(
                     "appium-python-client not installed. "
@@ -102,6 +102,16 @@ class AppiumDriverManager:
         drv = self._require_driver()
         return await asyncio.to_thread(lambda: drv.page_source)
 
+    async def get_parsed_screen(self):
+        """Fetch and parse the current screen in one call.
+
+        Convenience wrapper around ``get_page_source()`` + ``parse_page_source()``.
+        """
+        from src.mobile.screen_parser import parse_page_source
+
+        xml = await self.get_page_source()
+        return parse_page_source(xml)
+
     async def get_screenshot_base64(self) -> str:
         """Capture a screenshot and return it as a base64-encoded PNG string."""
         drv = self._require_driver()
@@ -133,17 +143,16 @@ class AppiumDriverManager:
 
     # ── App management ────────────────────────────────────────────────────────
 
-    async def launch_app(self, package: str, activity: str = "") -> None:
-        """Activate / start an installed app by package name."""
+    async def launch_app(self, package: str) -> None:
+        """Activate an installed app by package name.
+
+        Uses ``activate_app`` (equivalent to tapping the launcher icon).
+        ``start_activity`` is intentionally avoided — Android rejects
+        explicit-intent launches for non-exported Activities (SecurityException
+        on EMUI and other OEMs).
+        """
         drv = self._require_driver()
-
-        def _launch():
-            if activity:
-                drv.start_activity(package, activity)
-            else:
-                drv.activate_app(package)
-
-        await asyncio.to_thread(_launch)
+        await asyncio.to_thread(lambda: drv.activate_app(package))
         logger.info("app_launched", package=package)
 
     async def install_app(self, apk_path: str) -> None:

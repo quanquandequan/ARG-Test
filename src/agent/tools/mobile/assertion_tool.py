@@ -18,7 +18,6 @@ from __future__ import annotations
 from src.agent.base_tool import BaseTool
 from src.core.logging import get_logger
 from src.mobile.driver import AppiumDriverManager
-from src.mobile.screen_parser import parse_page_source
 
 logger = get_logger(__name__)
 
@@ -107,8 +106,18 @@ class AssertionTool(BaseTool):
     # ── Assertions ────────────────────────────────────────────────────────────
 
     async def _get_parsed(self):
-        xml = await self._mgr.get_page_source()
-        return parse_page_source(xml)
+        return await self._mgr.get_parsed_screen()
+
+    async def _resolve_target(
+        self, parsed, element_id: str = "", element_text: str = ""
+    ):
+        """Shared element lookup: try resource-id first, then fuzzy text."""
+        el = None
+        if element_id:
+            el = parsed.find_by_resource_id(element_id)
+        if el is None and element_text:
+            el = parsed.find_by_text(element_text)
+        return el
 
     async def _assert_text(
         self,
@@ -144,12 +153,7 @@ class AssertionTool(BaseTool):
             return f"{_FAIL} 必须提供 element_id 或 element_text 参数。"
 
         parsed = await self._get_parsed()
-        el = None
-        if element_id:
-            el = parsed.find_by_resource_id(element_id)
-        if el is None and element_text:
-            el = parsed.find_by_text(element_text)
-
+        el = await self._resolve_target(parsed, element_id, element_text)
         identifier = element_id or element_text
 
         if el is None or not el.is_visible:
@@ -199,12 +203,7 @@ class AssertionTool(BaseTool):
             return f"{_FAIL} 必须提供 element_id 或 element_text 参数。"
 
         parsed = await self._get_parsed()
-        el = None
-        if element_id:
-            el = parsed.find_by_resource_id(element_id)
-        if el is None and element_text:
-            el = parsed.find_by_text(element_text)
-
+        el = await self._resolve_target(parsed, element_id, element_text)
         identifier = element_id or element_text
         if el is None:
             return f"{_FAIL} 未找到元素：{identifier}"

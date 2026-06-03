@@ -134,7 +134,7 @@ class FakeAppiumDriverManager(AppiumDriverManager):
     async def get_current_package(self) -> str:
         return self._package if self._connected else ""
 
-    async def launch_app(self, package: str, activity: str = "") -> None:
+    async def launch_app(self, package: str) -> None:
         self._require_driver()
 
     async def install_app(self, apk_path: str) -> None:

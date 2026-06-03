@@ -128,25 +128,25 @@ agent:
     # ── Mobile UI Automation tools ────────────────────────────────────────
     # Uncomment to enable Android automation (requires Appium + mobile extras).
     # The four tools must always be enabled together; device_tool must run first.
-    # - name: device_tool
-    #   description: |
-    #     管理 Android 设备的 Appium 测试会话。在所有 UI 操作前必须先调用 connect 建立连接。
-    #     支持：connect、disconnect、list_devices、launch_app、install_app。
-    #
-    # - name: screen_tool
-    #   description: |
-    #     获取当前 Android 屏幕状态。优先使用 Appium XML 树，信息不足时自动调用 Qwen VL 截图识别。
-    #     action=get_current_screen 返回结构化元素；action=get_screenshot 保存截图。
-    #
-    # - name: action_tool
-    #   description: |
-    #     在 Android 设备上执行 UI 手势：tap（点击）、input_text（输入）、swipe（滑动）、
-    #     scroll（滚动）、back（返回）等。操作后自动失效屏幕缓存。
-    #
-    # - name: assertion_tool
-    #   description: |
-    #     验证 Android 页面 UI 状态，返回 PASS/FAIL 结果。
-    #     支持：assert_text、assert_not_text、assert_element、assert_clickable、assert_page、assert_checked。
+    - name: device_tool
+      description: |
+        管理 Android 设备的 Appium 测试会话。在所有 UI 操作前必须先调用 connect 建立连接。
+        支持：connect、disconnect、list_devices、launch_app、install_app。
+    
+    - name: screen_tool
+      description: |
+        获取当前 Android 屏幕状态。优先使用 Appium XML 树，信息不足时自动调用 Qwen VL 截图识别。
+        action=get_current_screen 返回结构化元素；action=get_screenshot 保存截图。
+    
+    - name: action_tool
+      description: |
+        在 Android 设备上执行 UI 手势：tap（点击）、input_text（输入）、swipe（滑动）、
+        scroll（滚动）、back（返回）等。操作后自动失效屏幕缓存。
+    
+    - name: assertion_tool
+      description: |
+        验证 Android 页面 UI 状态，返回 PASS/FAIL 结果。
+        支持：assert_text、assert_not_text、assert_element、assert_clickable、assert_page、assert_checked。
 
     # ── Requirement Domain ────────────────────────────────────────────────
     - name: requirement_parser
@@ -380,17 +380,33 @@ test_generator:
 # Ensure Appium server is running:  npx appium
 mobile:
   appium_server_url: "http://localhost:4723"
-  device_name: ""              # e.g. "emulator-5554" or "R5CX1234ABCD"
-  platform_version: ""         # e.g. "14"
-  app_package: ""              # e.g. "com.example.app"
-  app_activity: ""             # e.g. ".MainActivity"
+  device_name: "NXTDU16B05013894"              # e.g. "emulator-5554" or "R5CX1234ABCD"
+  platform_version: "8.0"         # e.g. "14"
+  app_package: "com.iqiyi.acg"              # e.g. "com.example.app"
+  # app_activity — deprecated: launch_app uses activate_app instead of startActivity
+  # (most inner Activities are not exported, causing SecurityException on EMUI etc.)
+  # app_activity: ""
   new_command_timeout: 300     # seconds before Appium closes idle session
   screenshot_dir: "./outputs/screenshots"
+  # ── Screen Tool 分析策略 ─────────────────────────────────────────────────
+  # XML 优先：只有 XML 信息不足时才截图调用 Qwen VL。
+  # "XML 是否足够"判断：
+  #   - 存在任意可点击/可聚焦元素 → 直接使用 XML（忽略下方阈值）
+  #   - 否则：含文字元素数量 >= vlm_fallback_min_text_elements → 使用 XML
+  # 设为 0 → 完全禁用 VLM 自动触发（仅 force_vlm=true 时才用）
+  vlm_fallback_min_text_elements: 1
+
+  # ── EMUI / 华为设备：解决每次弹"安装确认"问题 ────────────────────────────
+  # 首次运行后在手机弹窗里手动打开"信任此应用"开关，
+  # 然后把下面两项设为 true，之后就不再弹了。
+  skip_server_installation: true   # 跳过重装 UIAutomator2 Server APK
+  no_reset: true                   # 不清除 App 数据（保持已授权状态）
+  auto_grant_permissions: true     # 自动同意运行时权限弹窗
 
 # Qwen VL — used by screen_tool for visual page analysis (VLM fallback)
 # API key: set DASHSCOPE_API_KEY env var, or fill api_key below
 qwen_vision:
-  model: "qwen-vl-plus"        # or qwen-vl-max for higher accuracy
+  model: "qwen3.6-plus"        # Qwen3.6 VL for screen analysis
   api_key: null                # null → reads DASHSCOPE_API_KEY from env
   max_tokens: 1024
 

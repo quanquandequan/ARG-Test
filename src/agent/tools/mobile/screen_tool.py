@@ -1,18 +1,23 @@
-"""ScreenTool — hybrid screen analysis (XML tree + Qwen VL fallback).
+"""ScreenTool — hybrid screen analysis (XML tree primary, Qwen VL fallback).
 
-Strategy:
+Strategy (XML-first):
   1. Fetch page_source XML from Appium.
-  2. Parse into a structured element list.
-  3. Check PageCache — return cached result if the page structure is unchanged.
-  4. If XML tree is semantically rich (>= 3 elements with text), return it.
-  5. Otherwise take a screenshot and call Qwen VL for visual understanding,
-     merging the VLM description with the XML metadata.
-  6. Cache the result.
+  2. Check PageCache — return cached result if page structure is unchanged.
+  3. Parse XML into a structured element list.
+  4. Decide if XML is "sufficient":
+       - ANY clickable/focusable element exists  → XML is sufficient
+       - OR text/content-desc count >= threshold → XML is sufficient
+       (threshold configurable via mobile.vlm_fallback_min_text_elements in YAML,
+        default 1 — VLM fires only when XML is truly empty)
+  5. If sufficient  → return XML result directly (no screenshot taken).
+  6. If insufficient (or force_vlm=true) → take screenshot, call Qwen VL,
+     return VLM description alongside whatever XML elements were found.
+  7. Cache the result.
 
 Supported actions:
-  get_current_screen   Full hybrid analysis of the current screen.
+  get_current_screen   XML-first hybrid analysis of the current screen.
   get_screenshot       Take and save a screenshot (returns file path).
-  get_ui_tree          Return the raw XML element tree without VLM.
+  get_ui_tree          Return the raw XML element list (never calls VLM).
 """
 
 from __future__ import annotations
@@ -96,7 +101,18 @@ class ScreenTool(BaseTool):
         if not self._mgr.is_connected():
             return "错误：设备未连接，请先调用 device_tool action=connect。"
 
-        xml = await self._mgr.get_page_source()
+        try:
+            xml = await self._mgr.get_page_source()
+        except Exception as e:
+            err = str(e)
+            if "terminated" in err or "not started" in err or "session" in err.lower():
+                await self._mgr.disconnect()  # calls quit() + sets _driver=None cleanly
+                return (
+                    "Appium 会话已失效（超时或服务重启）。"
+                    "请调用 device_tool action=connect 重新建立连接，再继续操作。"
+                )
+            return f"获取页面失败：{e}"
+
         page_hash = compute_structure_hash(xml)
         activity = await self._mgr.get_current_activity()
 
@@ -117,21 +133,33 @@ class ScreenTool(BaseTool):
         vlm_description: str | None = None
         source = "xml"
 
-        # VLM fallback: use it when XML is sparse or force_vlm requested
-        xml_sparse = not parsed.has_meaningful_content()
-        use_vlm = (force_vlm or xml_sparse) and self._vlm and self._vlm.is_available()
+        # ── VLM fallback decision (XML-first) ─────────────────────────────────
+        # Read threshold from YAML; 0 means "always trust XML, never auto-fire".
+        cfg_mobile = get_config().get("mobile", {})
+        min_text = int(cfg_mobile.get("vlm_fallback_min_text_elements", 1))
+        xml_sufficient = parsed.has_meaningful_content(min_text_elements=min_text)
+
+        use_vlm = (
+            (force_vlm or not xml_sufficient)
+            and self._vlm is not None
+            and self._vlm.is_available()
+        )
         if use_vlm:
-            reason = "sparse_xml" if xml_sparse else "forced"
-            logger.debug("screen_vlm_fallback", reason=reason)
+            reason = "forced" if force_vlm else "xml_insufficient"
+            logger.debug("screen_vlm_fallback", reason=reason,
+                         xml_elements=len(parsed.elements))
             try:
                 screenshot_b64 = await self._mgr.get_screenshot_base64()
                 vlm_description = await self._vlm.describe_screen(screenshot_b64)
-                source = "vlm" if xml_sparse else "xml+vlm"
+                source = "vlm" if not xml_sufficient else "xml+vlm"
             except Exception as exc:
                 logger.warning("vlm_fallback_failed", error=str(exc))
-                screenshot_b64 = None
         else:
-            screenshot_b64 = None
+            logger.debug(
+                "screen_xml_used",
+                elements=len(parsed.elements),
+                clickable=len(parsed.clickable_elements()),
+            )
 
         # Cache the result (without screenshot for memory efficiency)
         self._cache.put(
