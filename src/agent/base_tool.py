@@ -2,6 +2,8 @@
 
 from abc import ABC, abstractmethod
 
+from src.agent.tool_result import ToolExecutionResult
+
 
 class BaseTool(ABC):
     """A tool that the Agent can invoke via function calling.
@@ -38,6 +40,10 @@ class BaseTool(ABC):
     async def execute(self, **kwargs) -> str:
         """Execute the tool and return a string result."""
         ...
+
+    async def execute_typed(self, **kwargs) -> ToolExecutionResult:
+        """Structured execution hook used by application services."""
+        return ToolExecutionResult(content=await self.execute(**kwargs))
 
     # ── Runtime override helpers ──────────────────────────────────────────
 

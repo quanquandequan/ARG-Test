@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import src.api.dependencies as deps
+from src.bootstrap import AppContainer
 from src.api.routers import health, ingestion, query
 
 
@@ -27,10 +28,13 @@ def wired_singletons(fake_embedder, fake_vectordb, fake_llm, fake_reranker, monk
     Instead we patch the leaf factory functions that the lru_cache chain
     calls internally, then clear the caches so they rebuild with fakes.
     """
-    monkeypatch.setattr(deps, "get_singleton_embedder", lambda: fake_embedder)
-    monkeypatch.setattr(deps, "get_singleton_vectordb", lambda: fake_vectordb)
-    monkeypatch.setattr(deps, "get_singleton_llm", lambda: fake_llm)
-    monkeypatch.setattr(deps, "get_singleton_reranker", lambda: fake_reranker)
+    container = AppContainer(
+        _embedder=fake_embedder,
+        _vectordb=fake_vectordb,
+        _llm=fake_llm,
+        _reranker=fake_reranker,
+    )
+    monkeypatch.setattr(deps, "get_container", lambda: container)
 
     # Clear caches so the lru_cache functions rebuild using the patched factories.
     deps.clear_all_caches()

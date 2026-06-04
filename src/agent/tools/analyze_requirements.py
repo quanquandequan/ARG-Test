@@ -43,7 +43,9 @@ from datetime import datetime
 from pathlib import Path
 
 from src.agent.base_tool import BaseTool
+from src.agent.tool_result import ToolExecutionResult
 from src.core.logging import get_logger
+from src.domain.requirements import RequirementAnalysisData
 from src.llm.base import BaseLLM
 from src.llm.types import Message
 
@@ -234,15 +236,46 @@ class AnalyzeRequirementsTool(BaseTool):
         output_dir: str = "",
         **kwargs,
     ) -> str:
+        result = await self.execute_typed(
+            requirement=requirement,
+            kb_context=kb_context,
+            module=module,
+            output_dir=output_dir,
+            **kwargs,
+        )
+        if result.data is not None:
+            out_dir = (
+                Path(output_dir.strip())
+                if output_dir.strip()
+                else self._default_output_dir
+            )
+            out_dir.mkdir(parents=True, exist_ok=True)
+            graph = result.data.graph
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_module = re.sub(r'[\\/:*?"<>|]', "_", result.data.module)
+            json_path = out_dir / f"{safe_module}_{timestamp}_req_graph.json"
+            md_path = out_dir / f"{safe_module}_{timestamp}_analysis.md"
+            _save_json(graph, json_path)
+            _save_markdown(graph, md_path, result.data.module)
+            result.content = _render_analysis_summary(
+                result.data,
+                json_path=str(json_path.resolve()),
+                markdown_path=str(md_path.resolve()),
+            )
+        return result.content
+
+    async def execute_typed(
+        self,
+        requirement: str = "",
+        kb_context: str = "",
+        module: str = "",
+        output_dir: str = "",
+        **kwargs,
+    ) -> ToolExecutionResult:
         if not requirement or not requirement.strip():
-            return "错误：请提供需求文档内容。"
+            return ToolExecutionResult(content="错误：请提供需求文档内容。")
 
         module = module.strip() or "需求分析"
-        out_dir = (
-            Path(output_dir.strip()) if output_dir.strip()
-            else self._default_output_dir
-        )
-        out_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. Build LLM prompt
         kb_section = (
@@ -276,7 +309,9 @@ class AnalyzeRequirementsTool(BaseTool):
                 module=module,
                 raw=raw[:200],
             )
-            return "LLM 未能生成有效的 RequirementGraph，请检查需求文档内容后重试。"
+            return ToolExecutionResult(
+                content="LLM 未能生成有效的 RequirementGraph，请检查需求文档内容后重试。"
+            )
 
         # 4. Add meta section
         graph["_meta"] = {
@@ -286,16 +321,6 @@ class AnalyzeRequirementsTool(BaseTool):
             "has_kb_context": bool(kb_context.strip()),
         }
 
-        # 5. Save files
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_module = re.sub(r'[\\/:*?"<>|]', "_", module)
-        json_path = out_dir / f"{safe_module}_{timestamp}_req_graph.json"
-        md_path = out_dir / f"{safe_module}_{timestamp}_analysis.md"
-
-        _save_json(graph, json_path)
-        _save_markdown(graph, md_path, module)
-
-        # 6. Build summary for Agent
         features = graph.get("features", [])
         risks = graph.get("risks", [])
         clarifications = graph.get("clarifications", [])
@@ -308,41 +333,23 @@ class AnalyzeRequirementsTool(BaseTool):
             risks=len(risks),
             clarifications=len(clarifications),
         )
+        data = RequirementAnalysisData(
+            module=module,
+            summary=graph.get("summary", "—"),
+            graph=graph,
+            feature_count=len(features),
+            risk_count=len(risks),
+            clarification_count=len(clarifications),
+            kb_context=kb_context,
+        )
+        return ToolExecutionResult(
+            content=_render_analysis_summary(data),
+            data=data,
+            metadata={"output_dir": output_dir.strip() or str(self._default_output_dir)},
+        )
 
-        lines = [
-            f"需求分析完成：{module}",
-            "",
-            f"JSON 文件：{json_path.resolve()}",
-            f"Markdown 报告：{md_path.resolve()}",
-            "",
-            f"摘要：{graph.get('summary', '—')}",
-            (
-                f"功能点：{len(features)} 个"
-                f"（P0: {sum(1 for f in features if f.get('priority') == 'P0')} 个，"
-                f"P1: {sum(1 for f in features if f.get('priority') == 'P1')} 个）"
-            ),
-            f"状态转换实体：{len(graph.get('state_transitions', []))} 个",
-            f"风险点：{len(risks)} 个（高风险: {len(high_risks)} 个）",
-            f"待澄清问题：{len(clarifications)} 个",
-        ]
-
-        if high_risks:
-            lines += ["", "高风险区域："]
-            for r in high_risks[:3]:
-                desc = r.get("description", "")
-                desc_short = desc[:60] + "..." if len(desc) > 60 else desc
-                lines.append(f"  [{r.get('area', '')}] {desc_short}")
-
-        if clarifications:
-            lines += ["", "待澄清问题（前3条）："]
-            for q in clarifications[:3]:
-                lines.append(f"  {q.get('id', '')}: {q.get('question', '')}")
-
-        strategy = graph.get("test_strategy", {})
-        if strategy.get("suggestion"):
-            lines += ["", f"测试策略建议：{strategy['suggestion']}"]
-
-        return "\n".join(lines)
+    def render_markdown(self, graph: dict, module: str) -> str:
+        return _render_markdown_text(graph, module)
 
     # ── Parsing ──────────────────────────────────────────────────────────────
 
@@ -393,7 +400,7 @@ def _save_json(graph: dict, path: Path) -> None:
         json.dump(graph, f, ensure_ascii=False, indent=2)
 
 
-def _save_markdown(graph: dict, path: Path, module: str) -> None:
+def _render_markdown_text(graph: dict, module: str) -> str:
     """Render the RequirementGraph as a human-readable Markdown report."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines: list[str] = [
@@ -520,5 +527,58 @@ def _save_markdown(graph: dict, path: Path, module: str) -> None:
         if strategy.get("suggestion"):
             lines += [f"**策略建议**：{strategy['suggestion']}", ""]
 
+    return "\n".join(lines)
+
+
+def _save_markdown(graph: dict, path: Path, module: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        f.write(_render_markdown_text(graph, module))
+
+
+def _render_analysis_summary(
+    data: RequirementAnalysisData,
+    json_path: str = "",
+    markdown_path: str = "",
+) -> str:
+    graph = data.graph
+    features = graph.get("features", [])
+    risks = graph.get("risks", [])
+    clarifications = graph.get("clarifications", [])
+    high_risks = [r for r in risks if r.get("level") == "high"]
+
+    lines = [f"需求分析完成：{data.module}", ""]
+    if json_path:
+        lines.append(f"JSON 文件：{json_path}")
+    if markdown_path:
+        lines.append(f"Markdown 报告：{markdown_path}")
+    if json_path or markdown_path:
+        lines.append("")
+    lines += [
+        f"摘要：{data.summary}",
+        (
+            f"功能点：{len(features)} 个"
+            f"（P0: {sum(1 for f in features if f.get('priority') == 'P0')} 个，"
+            f"P1: {sum(1 for f in features if f.get('priority') == 'P1')} 个）"
+        ),
+        f"状态转换实体：{len(graph.get('state_transitions', []))} 个",
+        f"风险点：{len(risks)} 个（高风险: {len(high_risks)} 个）",
+        f"待澄清问题：{len(clarifications)} 个",
+    ]
+
+    if high_risks:
+        lines += ["", "高风险区域："]
+        for risk in high_risks[:3]:
+            desc = risk.get("description", "")
+            desc_short = desc[:60] + "..." if len(desc) > 60 else desc
+            lines.append(f"  [{risk.get('area', '')}] {desc_short}")
+
+    if clarifications:
+        lines += ["", "待澄清问题（前3条）："]
+        for question in clarifications[:3]:
+            lines.append(f"  {question.get('id', '')}: {question.get('question', '')}")
+
+    strategy = graph.get("test_strategy", {})
+    if strategy.get("suggestion"):
+        lines += ["", f"测试策略建议：{strategy['suggestion']}"]
+
+    return "\n".join(lines)

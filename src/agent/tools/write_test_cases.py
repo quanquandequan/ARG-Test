@@ -18,7 +18,9 @@ from datetime import datetime
 from pathlib import Path
 
 from src.agent.base_tool import BaseTool
+from src.agent.tool_result import ToolExecutionResult
 from src.core.logging import get_logger
+from src.domain.requirements import GeneratedTestCase, TestCaseGenerationData
 from src.llm.base import BaseLLM
 from src.llm.types import Message
 
@@ -187,12 +189,37 @@ class WriteTestCasesTool(BaseTool):
         output_dir: str = "",
         **kwargs,
     ) -> str:
+        result = await self.execute_typed(
+            requirement=requirement,
+            kb_samples=kb_samples,
+            module=module,
+            output_dir=output_dir,
+            **kwargs,
+        )
+        if result.data is not None:
+            generation: TestCaseGenerationData = result.data
+            out_dir = Path(output_dir.strip()) if output_dir.strip() else self._default_output_dir
+            out_dir.mkdir(parents=True, exist_ok=True)
+            file_path = out_dir / self._build_filename(generation.module)
+            self.write_cases_to_excel(generation.cases, file_path, generation.module)
+            result.content = self._render_generation_summary(
+                generation,
+                file_path=str(file_path.resolve()),
+            )
+        return result.content
+
+    async def execute_typed(
+        self,
+        requirement: str = "",
+        kb_samples: str = "",
+        module: str = "",
+        output_dir: str = "",
+        **kwargs,
+    ) -> ToolExecutionResult:
         if not requirement or not requirement.strip():
-            return "错误：请提供需求文档内容。"
+            return ToolExecutionResult(content="错误：请提供需求文档内容。")
 
         module = module.strip() or "通用"
-        out_dir = Path(output_dir.strip()) if output_dir.strip() else self._default_output_dir
-        out_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. Build LLM prompt
         kb_section = (
@@ -222,29 +249,31 @@ class WriteTestCasesTool(BaseTool):
         cases = self._parse_cases(raw_output, module)
         if not cases:
             logger.warning("write_test_cases_empty", module=module, raw=raw_output[:200])
-            return "LLM 未能生成有效的测试用例，请检查需求文档内容后重试。"
+            return ToolExecutionResult(
+                content="LLM 未能生成有效的测试用例，请检查需求文档内容后重试。"
+            )
 
-        # 4. Write Excel
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_module = re.sub(r'[\\/:*?"<>|]', "_", module)
-        filename = f"{safe_module}_{timestamp}.xlsx"
-        file_path = out_dir / filename
-
-        self._write_excel(cases, file_path, module)
-
-        logger.info(
-            "test_cases_generated",
+        generation = TestCaseGenerationData(
             module=module,
-            count=len(cases),
-            path=str(file_path),
+            kb_samples=kb_samples,
+            cases=[
+                GeneratedTestCase(
+                    title=case["title"],
+                    module=case["module"],
+                    precondition=case["precondition"],
+                    steps=case["steps"],
+                    expected=case["expected"],
+                    priority=case["priority"],
+                    case_type=case["type"],
+                    notes=case["notes"],
+                )
+                for case in cases
+            ],
         )
-        return (
-            f"已生成测试用例 Excel 文件：\n"
-            f"路径：{file_path.resolve()}\n"
-            f"模块：{module}\n"
-            f"用例数量：{len(cases)} 条\n"
-            f"（覆盖正向 {sum(1 for c in cases if c.get('type') in ('正向', '功能'))} 条，"
-            f"反向/边界/异常 {sum(1 for c in cases if c.get('type') not in ('正向', '功能'))} 条）"
+        return ToolExecutionResult(
+            content=self._render_generation_summary(generation),
+            data=generation,
+            metadata={"output_dir": output_dir.strip() or str(self._default_output_dir)},
         )
 
     # ── Parsing ──────────────────────────────────────────────────────────────
@@ -292,8 +321,11 @@ class WriteTestCasesTool(BaseTool):
 
     # ── Excel writing ─────────────────────────────────────────────────────────
 
-    def _write_excel(
-        self, cases: list[dict], path: Path, module: str
+    def write_cases_to_excel(
+        self,
+        cases: list[GeneratedTestCase] | list[dict],
+        path: Path,
+        module: str,
     ) -> None:
         """Write test cases to an xlsx file with header formatting."""
         try:
@@ -333,17 +365,30 @@ class WriteTestCasesTool(BaseTool):
             None,
         )
         for row_idx, case in enumerate(cases, start=2):
+            if isinstance(case, GeneratedTestCase):
+                row_case = {
+                    "module": case.module,
+                    "title": case.title,
+                    "precondition": case.precondition,
+                    "steps": case.steps,
+                    "expected": case.expected,
+                    "priority": case.priority,
+                    "type": case.case_type,
+                    "notes": case.notes,
+                }
+            else:
+                row_case = case
             case_id = f"{prefix}-{str(row_idx - 1).zfill(3)}"
             values = [
                 case_id,
-                case["module"],
-                case["title"],
-                case["precondition"],
-                case["steps"],
-                case["expected"],
-                case["priority"],
-                case["type"],
-                case["notes"],
+                row_case["module"],
+                row_case["title"],
+                row_case["precondition"],
+                row_case["steps"],
+                row_case["expected"],
+                row_case["priority"],
+                row_case["type"],
+                row_case["notes"],
             ]
             for col_idx, value in enumerate(values, start=1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=value)
@@ -352,7 +397,7 @@ class WriteTestCasesTool(BaseTool):
             # Colour-code priority
             if priority_col is not None:
                 priority_cell = ws.cell(row=row_idx, column=priority_col)
-                priority = case["priority"]
+                priority = row_case["priority"]
                 if priority == "P0":
                     priority_cell.fill = PatternFill("solid", fgColor="FF6B6B")
                     priority_cell.font = Font(bold=True, color="FFFFFF")
@@ -362,3 +407,29 @@ class WriteTestCasesTool(BaseTool):
                     priority_cell.fill = PatternFill("solid", fgColor="6BCB77")
 
         wb.save(path)
+
+    def _write_excel(self, cases: list[dict], path: Path, module: str) -> None:
+        self.write_cases_to_excel(cases, path, module)
+
+    @staticmethod
+    def _build_filename(module: str) -> str:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_module = re.sub(r'[\\/:*?"<>|]', "_", module)
+        return f"{safe_module}_{timestamp}.xlsx"
+
+    @staticmethod
+    def _render_generation_summary(
+        generation: TestCaseGenerationData,
+        file_path: str = "",
+    ) -> str:
+        positive = sum(1 for case in generation.cases if case.case_type in ("正向", "功能"))
+        negative = len(generation.cases) - positive
+        lines = ["已生成测试用例 Excel 文件："]
+        if file_path:
+            lines.append(f"路径：{file_path}")
+        lines += [
+            f"模块：{generation.module}",
+            f"用例数量：{len(generation.cases)} 条",
+            f"（覆盖正向 {positive} 条，反向/边界/异常 {negative} 条）",
+        ]
+        return "\n".join(lines)

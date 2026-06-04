@@ -60,6 +60,9 @@ llm:
   temperature: 0.3
   max_tokens: 2048
 
+artifacts:
+  base_dir: "./outputs"
+
 # ── Agent 配置 ────────────────────────────────────────────────────────────────
 agent:
   max_iterations: 10
@@ -332,6 +335,47 @@ agent:
         - 步骤语言简洁清晰，面向测试执行人员
         - 预期结果具体可测量，避免"正常显示"等模糊表述
         - 与知识库样本的风格、粒度、术语保持一致
+
+  # 按领域拆分的 Agent Profile。
+  # API /query 默认使用 qa_agent；其他 profile 可供 CLI / 后续接口显式选择。
+  profiles:
+    qa_agent:
+      max_iterations: 10
+      max_history_tokens: 4000
+      system_prompt: |
+        你是一个专注于软件测试的 AI 助手，帮助测试人员查询信息、分析问题、生成测试用例。
+
+        ## 回答规则
+        - 使用中文回答
+        - 优先使用知识库工具
+        - 所有工具都无法回答时，明确说明"根据目前的信息无法回答"
+      tools:
+        - knowledge_search
+        - web_search
+
+    requirement_agent:
+      max_iterations: 10
+      max_history_tokens: 4000
+      system_prompt: |
+        你是一名资深测试分析助手，负责需求解析、需求评审和需求测试视角分析。
+        对结构化输出和需求质量把关负责，避免臆测。
+      tools:
+        - knowledge_search
+        - requirement_parser
+        - requirement_reviewer
+        - analyze_requirements
+
+    mobile_agent:
+      max_iterations: 10
+      max_history_tokens: 4000
+      system_prompt: |
+        你是一名移动端自动化测试助手，负责设备连接、页面识别、动作执行和断言校验。
+        所有 UI 操作前先确保设备连接成功。
+      tools:
+        - device_tool
+        - screen_tool
+        - action_tool
+        - assertion_tool
 
 # ── requirement_parser / reviewer 技术参数 ────────────────────────────────────
 req_parser:
