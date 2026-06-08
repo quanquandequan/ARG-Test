@@ -183,8 +183,13 @@ class TestCaseGenerationService:
             or str(graph.get("_meta", {}).get("module") or "")
             or "通用"
         )
+        kb_samples = await self._build_kb_samples(
+            resolved_module,
+            json.dumps(graph, ensure_ascii=False),
+        )
         request = TestCaseGenerationRequest(
             requirement=json.dumps(graph, ensure_ascii=False),
+            kb_samples=kb_samples,
             module=resolved_module,
             output_dir=output_dir,
             generation_mode=generation_mode,

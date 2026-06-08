@@ -75,20 +75,31 @@ _SYSTEM_PROMPT = """\
   “历史功能 / 历史差异 / 回测范围”分析，不得写入 features。
 
 ## 事实证据规则（非常重要）
-- features 中的 description、每一条 boundaries、每一条 test_focus，都必须能追溯到
-  需求文档或用户确认答复。
+- features 中的 description、每一条 boundaries，以及 state_transitions 中的
+  每一条 transitions，都必须能追溯到需求文档或用户确认答复。
+- test_focus、risks、test_strategy 是测试视角推导字段，不要求逐字 evidence；
+  但它们不能引入新的产品功能事实。
 - 每个 feature 必须提供 evidence 数组。evidence 只能使用以下 source：
   - "prd"：quote 必须逐字摘自【需求文档内容】
   - "confirmation"：quote 必须逐字摘自【用户确认补充】
 - evidence.field 必须指向被证明的字段，例如：
   - "description"
   - "boundaries[0]"
-  - "test_focus[1]"
 - quote 必须是原文短句，不能改写、概括或补写。
 - 如果某个功能、边界、状态、文案、默认值、重试、缓存、空态、接口策略等
   在需求文档和用户确认答复中找不到逐字或明确依据，不得写入 features；
   应写入 clarifications 向用户确认。
 - 知识库、历史测试用例、Bug、XMind 不能作为 features 的 evidence。
+
+## V1 测试范围收敛
+- 本阶段只服务功能测试和 UI 自动化测试。
+- 不生成接口测试、埋点测试、配置专项测试。
+- 需求文档中的“接口字段建议”“数据字段建议”“配置能力建议”“埋点需求”
+  仅作为理解功能展示、页面状态和用户操作的背景，不要拆成独立 feature。
+- features 必须聚焦：页面展示、用户点击、状态变化、页面跳转、UI 文案、
+  按钮/入口、模块显示隐藏、空态/异常态、UI 自动化可验证点。
+- test_focus 应优先表达 UI 自动化可验证点，例如页面入口、按钮文案、
+  点击动作、跳转目标、空态文案、模块显示/隐藏。
 
 ## 输出格式（严格遵守）
 只输出 JSON 对象，不加任何 Markdown 标记或解释文字。
@@ -156,7 +167,8 @@ JSON 结构如下：
       "id": "Q001",
       "question": "具体问题（以问号结尾）",
       "context": "问题来源的需求上下文",
-      "impact": "若不澄清对测试的影响"
+      "impact": "若不澄清对测试的影响",
+      "blocking": true
     }
   ],
   "test_strategy": {
@@ -175,9 +187,15 @@ JSON 结构如下：
   - 每条 transitions 都必须有 evidence，且 evidence quote 必须来自需求文档或用户确认答复
 - risks：至少包含2个，按 level 降序排列
 - clarifications：需求模糊、缺失、矛盾之处，列出具体可回答的问题
+  - blocking=true：会影响当前功能事实确认，confirmed 阶段必须先向用户确认
+  - blocking=false：不影响当前功能事实确认，仅作为后续优化或测试关注点
 - 结合知识库背景信息，对比现有功能逻辑，重点标注变更点和潜在回归风险；
   但所有功能点必须能在需求文档中找到依据
-- confirmed 阶段如果仍有关键逻辑不清楚，必须输出 clarifications，不要把推测写入 features
+- confirmed 阶段如果仍有关键逻辑不清楚，必须输出 blocking=true 的
+  clarifications，不要把推测写入 features
+- test_strategy.focus_areas 必须包含“UI 自动化优先覆盖主流程”；
+  无法稳定自动化的视觉/设计验收点只作为人工检查建议
+- 不要把接口字段、配置能力、埋点字段写成独立测试范围
 """
 
 _USER_TEMPLATE = """\
@@ -546,12 +564,16 @@ def _validate_confirmed_graph(
         "prd": _normalise_evidence_text(requirement),
         "confirmation": _normalise_evidence_text(clarification_answers),
     }
+    _downgrade_answered_blocking_clarifications(
+        graph.get("clarifications", []),
+        clarification_answers,
+    )
 
-    clarifications = graph.get("clarifications", [])
-    if _has_non_empty_items(clarifications):
+    blocking_clarifications = _blocking_clarifications(graph.get("clarifications", []))
+    if blocking_clarifications:
         errors.append(
-            "confirmed JSON 中仍包含待澄清问题。请先让用户确认这些问题，"
-            "不要把未确认需求落为最终 JSON。"
+            "confirmed JSON 中仍包含 blocking=true 的待澄清问题。"
+            "请先让用户确认这些关键问题，不要把未确认需求落为最终 JSON。"
         )
 
     features = graph.get("features", [])
@@ -587,18 +609,6 @@ def _validate_confirmed_graph(
                         evidence=evidence,
                         source_texts=source_texts,
                     )
-        test_focus = feature.get("test_focus", [])
-        if isinstance(test_focus, list):
-            for idx, value in enumerate(test_focus):
-                if str(value).strip():
-                    _validate_required_field_evidence(
-                        errors,
-                        item_label=feature_label,
-                        field=f"test_focus[{idx}]",
-                        evidence=evidence,
-                        source_texts=source_texts,
-                    )
-
     _validate_state_transition_evidence(
         errors,
         graph.get("state_transitions", []),
@@ -693,7 +703,11 @@ def _evidence_quote_is_valid(
     if source not in _EVIDENCE_SOURCES or not quote:
         return False
     source_text = source_texts.get(source, "")
-    return bool(source_text) and quote in source_text
+    if not source_text:
+        return False
+    if quote in source_text:
+        return True
+    return _quote_tokens_in_source(quote, source_text)
 
 
 def _normalise_evidence_text(text: str) -> str:
@@ -702,30 +716,131 @@ def _normalise_evidence_text(text: str) -> str:
     replacements = {
         "“": '"',
         "”": '"',
-        "‘": "'",
-        "’": "'",
         "，": ",",
         "。": ".",
         "：": ":",
         "；": ";",
+        "、": ",",
+        "！": "!",
+        "？": "?",
         "（": "(",
         "）": ")",
+        "【": "[",
+        "】": "]",
+        "《": "<",
+        "》": ">",
     }
     for src, dst in replacements.items():
         normalised = normalised.replace(src, dst)
+    normalised = re.sub(r"[‘’'`]", '"', normalised)
+    normalised = re.sub(r"[-–—_]+", "", normalised)
     return re.sub(r"\s+", "", normalised)
 
 
-def _has_non_empty_items(value) -> bool:
-    """判断列表或对象中是否存在有效内容。"""
-    if not isinstance(value, list):
+def _quote_tokens_in_source(quote: str, source_text: str) -> bool:
+    """允许证据短句跨 Markdown 列表或被轻微合并表达。"""
+    tokens = _evidence_tokens(quote)
+    if not tokens:
         return False
+    if len(tokens) == 1:
+        return tokens[0] in source_text
+
+    cursor = 0
+    matched = 0
+    for token in tokens:
+        found = source_text.find(token, cursor)
+        if found < 0:
+            continue
+        matched += 1
+        cursor = found + len(token)
+    if matched == len(tokens):
+        return True
+    return _quote_token_coverage_is_enough(tokens, source_text)
+
+
+def _quote_token_coverage_is_enough(tokens: list[str], source_text: str) -> bool:
+    """当 quote 由列表项合并而来时，允许较高覆盖率命中。"""
+    unique_tokens = list(dict.fromkeys(tokens))
+    if len(unique_tokens) < 4:
+        return False
+    matched = sum(1 for token in unique_tokens if token in source_text)
+    return matched >= 4 and matched / len(unique_tokens) >= 0.55
+
+
+def _evidence_tokens(text: str) -> list[str]:
+    """提取用于顺序包含匹配的稳定 token。"""
+    tokens: list[str] = []
+    for part in re.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9]+", text):
+        if re.fullmatch(r"[\u4e00-\u9fff]+", part):
+            if len(part) <= 6:
+                tokens.append(part)
+            else:
+                tokens.extend(part[idx:idx + 2] for idx in range(len(part) - 1))
+            continue
+        if len(part) >= 2:
+            tokens.append(part)
+    return tokens
+
+
+def _downgrade_answered_blocking_clarifications(
+    clarifications,
+    clarification_answers: str,
+) -> None:
+    """把用户确认答复中已覆盖的问题从阻塞项降级为非阻塞项。"""
+    if not isinstance(clarifications, list) or not clarification_answers.strip():
+        return
+    answer_tokens = set(_evidence_tokens(_normalise_evidence_text(clarification_answers)))
+    if not answer_tokens:
+        return
+    for item in clarifications:
+        if not isinstance(item, dict) or not _is_blocking_clarification(item):
+            continue
+        question_text = " ".join(
+            str(item.get(key) or "")
+            for key in ("question", "context", "impact")
+        )
+        question_tokens = set(_evidence_tokens(_normalise_evidence_text(question_text)))
+        if _has_answer_overlap(question_tokens, answer_tokens):
+            item["blocking"] = False
+            item["blocking_downgraded_reason"] = "用户确认答复中已有相关信息"
+
+
+def _has_answer_overlap(question_tokens: set[str], answer_tokens: set[str]) -> bool:
+    """判断澄清问题是否已被用户答复覆盖。"""
+    if not question_tokens or not answer_tokens:
+        return False
+    matched = 0
+    for token in question_tokens:
+        if token in answer_tokens:
+            matched += 1
+            continue
+        if any(token in answer or answer in token for answer in answer_tokens):
+            matched += 1
+    return matched >= 2 or bool(question_tokens & answer_tokens)
+
+
+def _blocking_clarifications(value) -> list[dict]:
+    """返回会阻塞 confirmed 落盘的关键澄清项。"""
+    if not isinstance(value, list):
+        return []
+    blocking_items: list[dict] = []
     for item in value:
-        if isinstance(item, dict):
-            if any(str(val).strip() for val in item.values()):
-                return True
-        elif str(item).strip():
-            return True
+        if not isinstance(item, dict):
+            continue
+        if not any(str(val).strip() for val in item.values()):
+            continue
+        if _is_blocking_clarification(item):
+            blocking_items.append(item)
+    return blocking_items
+
+
+def _is_blocking_clarification(item: dict) -> bool:
+    """判断单条澄清问题是否阻塞 confirmed 产物。"""
+    raw = item.get("blocking", False)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"true", "yes", "y", "1", "是", "阻塞"}
     return False
 
 
@@ -736,11 +851,13 @@ def _build_validation_retry_prompt(errors: list[str]) -> str:
         "上一次 RequirementGraph 未通过 confirmed 事实证据校验：\n"
         f"{rendered_errors}\n\n"
         "请重新输出完整 JSON，并严格遵守：\n"
-        "1. features.description、每条 boundaries、每条 test_focus、"
+        "1. features.description、每条 boundaries、"
         "每条 state_transitions.transitions 都必须提供 evidence。\n"
-        "2. evidence.quote 必须逐字摘自【需求文档内容】或【用户确认补充】。\n"
-        "3. 找不到证据的内容必须删除，或改为 clarifications 向用户确认。\n"
-        "4. 如果仍有待澄清问题，不要把推测写成 confirmed 功能事实。\n"
+        "2. 字段可以用测试人员可读的规整表达，但 evidence.quote 必须来自"
+        "【需求文档内容】或【用户确认补充】。\n"
+        "3. 找不到来源证据的产品事实必须删除，或改为 clarifications 向用户确认。\n"
+        "4. 如果仍有影响功能事实确认的待澄清问题，请标记 blocking=true；"
+        "非阻塞测试关注点可标记 blocking=false。\n"
         "只输出修正后的 JSON 对象。"
     )
 

@@ -90,8 +90,11 @@ agent:
     2. 知识查询统一走 search_knowledge，由工具内部决定是否补充网页搜索
     3. 需求分析统一走 analyze_requirement
     4. 测试用例设计统一走 design_test_cases
-    5. 自动化执行统一走 execute_scenario
-    6. 综合工具结果给出完整回答
+    5. 自动化执行统一走 execute_scenario（仅用于预生成 automation JSON 的场景）
+    6. 即时 UI 操作（打开App、点击、滑动、截图、断言）→ device_tool > screen_tool > action_tool > assertion_tool
+       - 流程：device_tool(connect → launch_app) → screen_tool(get_current_screen) → action_tool(tap/input/swipe) → assertion_tool
+       - execute_scenario 不要用于即时操作，仅用于预生成的自动化 JSON
+    7. 综合工具结果给出完整回答
 
     ## 回答规则
     - 使用中文回答
@@ -133,6 +136,10 @@ agent:
         - analyze_requirement
         - design_test_cases
         - execute_scenario
+        - device_tool
+        - screen_tool
+        - action_tool
+        - assertion_tool
 
     mobile_debug:
       max_iterations: 10

@@ -20,6 +20,7 @@ from src.application.workflow_nodes import (
     WorkflowContext,
     WorkflowNode,
 )
+from src.core.logging import get_logger
 from src.domain.artifacts import ArtifactKind, ArtifactRecord
 from src.domain.requirement import Feature, RequirementIR
 from src.domain.requirements import (
@@ -30,6 +31,9 @@ from src.domain.requirements import (
 from src.ingestion.cleaner import TextCleaner
 from src.ingestion.loader import DocumentLoader
 from src.retriever.retrieval_engine import RetrievalEngine
+from src.vectordb.base import SearchResult
+
+logger = get_logger(__name__)
 
 
 class TestCaseGenerationWorkflow:
@@ -156,8 +160,39 @@ class TestCaseGenerationWorkflow:
             tmp_path.unlink(missing_ok=True)
 
     async def build_kb_samples(self, module: str, requirement_text: str) -> str:
-        query = "测试用例 格式 模板"
-        results = await self._retrieval_engine.search(query=query, top_k=5, final_k=3)
+        query = f"{module} 测试用例 步骤 预期 格式"
+        try:
+            candidates = await self._retrieval_engine.retrieve_candidates(
+                query=query,
+                top_k=80,
+            )
+        except Exception as exc:
+            logger.warning(
+                "test_case_kb_samples_unavailable",
+                module=module,
+                error=str(exc),
+            )
+            return ""
+        excel_candidates = [
+            result
+            for result in candidates
+            if _is_excel_case_sample(result)
+        ]
+        rerank_pool = excel_candidates or candidates
+        try:
+            results = await self._retrieval_engine.rerank_candidates(
+                query=query,
+                candidates=rerank_pool,
+                top_k=5,
+            )
+        except Exception as exc:
+            logger.warning(
+                "test_case_kb_sample_rerank_unavailable",
+                module=module,
+                error=str(exc),
+            )
+            results = rerank_pool[:5]
+        results = _select_sample_results(results, final_k=3)
         if not results:
             return ""
         return "\n\n".join(
@@ -352,18 +387,90 @@ def _render_analysis_graph_for_generation(graph: dict) -> str:
     """压缩确认版分析 JSON，作为 CaseGenerator 的唯一需求输入。"""
     payload = {
         "summary": graph.get("summary", ""),
-        "features": graph.get("features", []),
-        "state_transitions": graph.get("state_transitions", []),
-        "risks": graph.get("risks", []),
-        "clarifications": graph.get("clarifications", []),
-        "test_strategy": graph.get("test_strategy", {}),
-        "_meta": graph.get("_meta", {}),
+        "features": [
+            _compact_feature(feature)
+            for feature in graph.get("features", [])
+            if isinstance(feature, dict)
+        ],
+        "state_transitions": _compact_state_transitions(
+            graph.get("state_transitions", [])
+        ),
+        "test_strategy": _compact_test_strategy(graph.get("test_strategy", {})),
     }
     return "确认版需求分析 JSON：\n" + json.dumps(
         payload,
         ensure_ascii=False,
         indent=2,
     )
+
+
+def _select_sample_results(
+    results: list[SearchResult],
+    final_k: int,
+) -> list[SearchResult]:
+    excel = [
+        result
+        for result in results
+        if _is_excel_case_sample(result)
+    ]
+    return (excel or results)[:final_k]
+
+
+def _is_excel_case_sample(result: SearchResult) -> bool:
+    metadata = dict(result.metadata or {})
+    source_format = str(
+        metadata.get("source_format")
+        or metadata.get("format")
+        or ""
+    ).lower()
+    source_path = str(metadata.get("source_path") or "").strip()
+    source_name = str(metadata.get("source_name") or "").strip()
+    source_ext = str(metadata.get("source_ext") or "").lower().strip()
+    filename = (source_name or Path(source_path).name or result.document_id).lower()
+    ext = source_ext or Path(filename).suffix.lower()
+    is_excel = source_format in {"xlsx", "xlsm"} or ext in {".xlsx", ".xlsm"}
+    is_bug = any(
+        marker in filename
+        for marker in ("bug", "buglist", "缺陷", "acn_buglist")
+    )
+    return is_excel and not is_bug
+
+
+def _compact_feature(feature: dict) -> dict:
+    return {
+        "id": feature.get("id", ""),
+        "name": feature.get("name", ""),
+        "description": feature.get("description", ""),
+        "priority": feature.get("priority", "P1"),
+        "boundaries": feature.get("boundaries", []),
+        "test_focus": feature.get("test_focus", []),
+        "dependencies": feature.get("dependencies", []),
+    }
+
+
+def _compact_state_transitions(raw_transitions) -> list[dict]:
+    transitions: list[dict] = []
+    if not isinstance(raw_transitions, list):
+        return transitions
+    for item in raw_transitions:
+        if not isinstance(item, dict):
+            continue
+        transitions.append({
+            "entity": item.get("entity", ""),
+            "states": item.get("states", []),
+            "transitions": item.get("transitions", []),
+        })
+    return transitions
+
+
+def _compact_test_strategy(strategy) -> dict:
+    if not isinstance(strategy, dict):
+        return {}
+    return {
+        "scope": strategy.get("scope", ""),
+        "focus_areas": strategy.get("focus_areas", []),
+        "exclusions": strategy.get("exclusions", []),
+    }
 
 
 def _infer_media_type(extension: str) -> str:
