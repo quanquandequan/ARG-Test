@@ -44,7 +44,7 @@ from pathlib import Path
 
 from src.agent.base_tool import BaseTool
 from src.agent.tool_result import ToolExecutionResult
-from src.application.artifact_repository import LocalArtifactRepository
+from src.services.artifact_repository import LocalArtifactRepository
 from src.core.logging import get_logger
 from src.domain.artifacts import ArtifactKind
 from src.domain.requirements import RequirementAnalysisData

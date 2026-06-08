@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from src.api import dependencies as deps
 from src.api.schemas.query import AgentStepOut, QueryRequest, QueryResponse
-from src.bootstrap import UnknownAgentProfileError
+from src.api.dependencies import UnknownAgentProfileError
 from src.llm.types import Message
 
 router = APIRouter(tags=["query"])

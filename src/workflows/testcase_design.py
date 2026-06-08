@@ -8,18 +8,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from src.application.artifact_repository import LocalArtifactRepository
-from src.application.exporters import ExcelExporter, JsonExporter, MarkdownExporter
-from src.application.exporters.common import normalise_generation_mode
-from src.application.workflow_nodes import (
-    ArtifactBuilderNode,
-    CaseGeneratorNode,
-    RequirementParserNode,
-    ScenarioGeneratorNode,
-    TestPointGeneratorNode,
-    WorkflowContext,
-    WorkflowNode,
-)
+from src.services.artifact_repository import LocalArtifactRepository
+from src.services.exporters import ExcelExporter, JsonExporter, MarkdownExporter
+from src.services.exporters.common import normalise_generation_mode
+from src.services.case_generator import CaseGeneratorNode
+from src.services.workflow_base import WorkflowContext
 from src.core.logging import get_logger
 from src.domain.artifacts import ArtifactKind, ArtifactRecord
 from src.domain.requirement import Feature, RequirementIR
@@ -41,50 +34,22 @@ class TestCaseGenerationWorkflow:
 
     __test__ = False
 
-    def __init__(
-        self,
-        loader: DocumentLoader,
-        cleaner: TextCleaner,
-        retrieval_engine: RetrievalEngine,
-        artifacts: LocalArtifactRepository,
-        nodes: list[WorkflowNode],
-        excel_exporter: ExcelExporter | None = None,
-        json_exporter: JsonExporter | None = None,
-        markdown_exporter: MarkdownExporter | None = None,
-        default_output_dir: str = "./outputs/test_cases",
-    ):
+    def __init__(self, loader, cleaner, retrieval_engine, artifacts, llm=None,
+                 excel_exporter=None, json_exporter=None, markdown_exporter=None,
+                 default_output_dir="./outputs/test_cases"):
         self._loader = loader
         self._cleaner = cleaner
         self._retrieval_engine = retrieval_engine
         self._artifacts = artifacts
-        self._nodes = nodes
+        self._llm = llm
         self._excel_exporter = excel_exporter or ExcelExporter()
         self._json_exporter = json_exporter or JsonExporter()
         self._markdown_exporter = markdown_exporter or MarkdownExporter()
         self._default_output_dir = Path(default_output_dir)
 
     @classmethod
-    def create_default(
-        cls,
-        loader: DocumentLoader,
-        cleaner: TextCleaner,
-        retrieval_engine: RetrievalEngine,
-        artifacts: LocalArtifactRepository,
-        llm,
-    ) -> TestCaseGenerationWorkflow:
-        return cls(
-            loader=loader,
-            cleaner=cleaner,
-            retrieval_engine=retrieval_engine,
-            artifacts=artifacts,
-            nodes=[
-                RequirementParserNode(llm=llm),
-                TestPointGeneratorNode(),
-                ScenarioGeneratorNode(),
-                CaseGeneratorNode(llm=llm),
-                ArtifactBuilderNode(),
-            ],
-        )
+    def create_default(cls, loader, cleaner, retrieval_engine, artifacts, llm):
+        return cls(loader=loader, cleaner=cleaner, retrieval_engine=retrieval_engine, artifacts=artifacts, llm=llm)
 
     async def run(self, request: TestCaseGenerationRequest) -> TestCaseGenerationData:
         if not request.requirement or not request.requirement.strip():
@@ -99,8 +64,37 @@ class TestCaseGenerationWorkflow:
             generation_mode=generation_mode,
             kb_samples=request.kb_samples,
         )
-        for node in self._nodes:
-            context = await node.execute(context)
+        # ── Inline pipeline (Step 1-5) ──
+        from src.services.requirement_ir_builder import RequirementIRBuilder
+        from src.domain.test_design.test_point import TestPoint
+        from src.domain.test_design.test_scenario import TestScenario
+        from src.domain.test_design.execution_plan import ExecutionAction, ExecutionPlan
+        from src.domain.artifacts.test_design_artifact import TestDesignArtifact
+
+        builder = RequirementIRBuilder(llm=self._llm)
+        context.requirement_ir = await builder.build(context.requirement_text, context.module, context.kb_samples)
+        if context.requirement_ir is None:
+            raise ValueError("LLM 未能生成有效的 RequirementIR。")
+
+        ir = context.requirement_ir
+        points = []
+        for idx, f in enumerate(ir.features, start=1):
+            points.append(TestPoint(id=f"TP{idx:03d}", title=f.name, feature_id=f.id, priority=f.priority, test_type="功能", risk_level="medium", source=f"feature:{f.id}", hints=list(f.test_hints)))
+        for idx, r in enumerate(ir.business_rules, start=1):
+            points.append(TestPoint(id=f"TP{len(points)+1:03d}", title=r.description, priority="P1", test_type="规则", risk_level="medium", source=f"rule:{r.id}", hints=[r.condition, r.outcome]))
+        if not points:
+            points.append(TestPoint(id="TP001", title=context.module, priority="P0", test_type="功能", source="requirement"))
+        context.test_points = points
+
+        scenarios = []
+        for idx, pt in enumerate(points, start=1):
+            scenarios.append(TestScenario(id=f"SC{idx:03d}", title=pt.title, point_id=pt.id, precondition="无", steps_intent=[f"验证 {pt.title}"], expected_intent=[f"{pt.title} 符合需求"], data_state="normal", priority=pt.priority, test_type=pt.test_type, execution_intent=ExecutionPlan(actions=[ExecutionAction(action="verify", target=pt.title, locator_hints=[pt.title])], assertions=[pt.title], locator_hints=[pt.title])))
+        context.scenarios = scenarios
+
+        case_gen = CaseGeneratorNode(llm=self._llm)
+        context = await case_gen.execute(context)
+
+        context.artifact = TestDesignArtifact(module=context.module, generation_mode=context.generation_mode, requirement_ir=context.requirement_ir, test_points=context.test_points, scenarios=context.scenarios, test_cases=context.test_cases, metadata={"kb_samples_used": bool(context.kb_samples.strip()), "source_length": len(context.requirement_text)})
 
         if context.artifact is None:
             raise ValueError("Workflow did not produce a TestDesignArtifact.")
@@ -131,10 +125,32 @@ class TestCaseGenerationWorkflow:
             kb_samples=request.kb_samples,
             requirement_ir=_requirement_ir_from_analysis_graph(graph, module),
         )
-        for node in self._nodes:
-            if isinstance(node, RequirementParserNode):
-                continue
-            context = await node.execute(context)
+        # ── Inline pipeline (skip RequirementIR, use graph directly) ──
+        from src.domain.test_design.test_point import TestPoint
+        from src.domain.test_design.test_scenario import TestScenario
+        from src.domain.test_design.execution_plan import ExecutionAction, ExecutionPlan
+        from src.domain.artifacts.test_design_artifact import TestDesignArtifact
+
+        features = graph.get("features", [])
+        rules = graph.get("business_rules", [])
+        points = []
+        for idx, f in enumerate(features, start=1):
+            points.append(TestPoint(id=f"TP{idx:03d}", title=f.get("name",""), feature_id=f.get("id",""), priority=f.get("priority","P1"), test_type="功能", risk_level=f.get("risk_level","medium"), source=f"feature:{f.get('id','')}", hints=list(f.get("test_focus",[]))))
+        for idx, r in enumerate(rules, start=1):
+            points.append(TestPoint(id=f"TP{len(points)+1:03d}", title=r.get("description",""), priority="P1", test_type="规则", risk_level="medium", source=f"rule:{r.get('id','')}", hints=[r.get("condition",""), r.get("outcome","")]))
+        if not points:
+            points.append(TestPoint(id="TP001", title=module, priority="P0", test_type="功能", source="requirement"))
+        context.test_points = points
+
+        scenarios = []
+        for idx, pt in enumerate(points, start=1):
+            scenarios.append(TestScenario(id=f"SC{idx:03d}", title=pt.title, point_id=pt.id, precondition="无", steps_intent=[f"验证 {pt.title}"], expected_intent=[f"{pt.title} 符合需求"], data_state="normal", priority=pt.priority, test_type=pt.test_type, execution_intent=ExecutionPlan(actions=[ExecutionAction(action="verify", target=pt.title, locator_hints=[pt.title])], assertions=[pt.title], locator_hints=[pt.title])))
+        context.scenarios = scenarios
+
+        case_gen = CaseGeneratorNode(llm=self._llm)
+        context = await case_gen.execute(context)
+
+        context.artifact = TestDesignArtifact(module=context.module, generation_mode=context.generation_mode, requirement_ir=context.requirement_ir, test_points=context.test_points, scenarios=context.scenarios, test_cases=context.test_cases, metadata={"kb_samples_used": bool(context.kb_samples.strip()), "source_length": len(context.requirement_text)})
 
         if context.artifact is None:
             raise ValueError("Workflow did not produce a TestDesignArtifact.")
@@ -273,14 +289,6 @@ class TestCaseGenerationWorkflow:
         )
 
 
-def default_test_case_nodes(llm) -> list[WorkflowNode]:
-    return [
-        RequirementParserNode(llm=llm),
-        TestPointGeneratorNode(),
-        ScenarioGeneratorNode(),
-        CaseGeneratorNode(llm=llm),
-        ArtifactBuilderNode(),
-    ]
 
 
 def render_generation_summary(

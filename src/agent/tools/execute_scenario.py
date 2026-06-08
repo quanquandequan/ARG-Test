@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.agent.base_tool import FINAL_ANSWER_PASSTHROUGH, BaseTool
 from src.agent.tool_result import ToolExecutionResult
-from src.application.execution_service import MobileExecutionService
+from src.workflows.execution import ExecutionWorkflow
 from src.core.logging import get_logger
 from src.domain.execution import ScenarioExecutionRequest
 
@@ -16,8 +16,8 @@ class ExecuteScenarioTool(BaseTool):
 
     final_answer_mode = FINAL_ANSWER_PASSTHROUGH
 
-    def __init__(self, service: MobileExecutionService):
-        self._service = service
+    def __init__(self, workflow: ExecutionWorkflow):
+        self._workflow = workflow
 
     @property
     def name(self) -> str:
@@ -92,7 +92,7 @@ class ExecuteScenarioTool(BaseTool):
             return ToolExecutionResult(content="错误：请提供 automation_json_path。")
 
         try:
-            result = await self._service.execute_scenario(
+            result = await self._workflow.execute(
                 ScenarioExecutionRequest(
                     automation_json_path=automation_json_path,
                     case_id=case_id,

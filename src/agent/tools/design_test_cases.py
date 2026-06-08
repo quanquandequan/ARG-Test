@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.agent.base_tool import FINAL_ANSWER_PASSTHROUGH, BaseTool
 from src.agent.tool_result import ToolExecutionResult
-from src.application.requirement_services import TestCaseGenerationService
+from src.workflows.testcase_design import TestCaseGenerationWorkflow
 from src.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -17,16 +17,10 @@ class DesignTestCasesTool(BaseTool):
 
     final_answer_mode = FINAL_ANSWER_PASSTHROUGH
 
-    def __init__(
-        self,
-        service: TestCaseGenerationService,
-        output_dir: str | None = None,
-        system_prompt: str | None = None,
-    ):
+    def __init__(self, workflow: TestCaseGenerationWorkflow, output_dir=None, system_prompt=None):
         from src.core.config import get_config
-
         cfg = get_config().get("test_generator", {})
-        self._service = service
+        self._workflow = workflow
         self._default_output_dir = Path(
             output_dir or cfg.get("output_dir", "./outputs/test_cases")
         )
@@ -108,7 +102,7 @@ class DesignTestCasesTool(BaseTool):
             )
 
         try:
-            result = await self._service.generate_from_analysis_json(
+            result = await self._workflow.run_from_analysis_json(
                 analysis_json_path=analysis_json_path,
                 module=module,
                 output_dir=output_dir or str(self._default_output_dir),

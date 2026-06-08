@@ -6,11 +6,11 @@ import ast
 import json
 import re
 
-from src.application.exporters.common import (
+from src.services.exporters.common import (
     normalise_expected_visibility,
     stringify_extra,
 )
-from src.application.workflow_nodes.base import WorkflowContext, WorkflowNode
+from src.services.workflow_base import WorkflowContext, WorkflowNode
 from src.core.logging import get_logger
 from src.domain.requirements import GeneratedTestCase
 from src.llm.base import BaseLLM

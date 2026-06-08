@@ -1,68 +1,120 @@
-"""由共享应用容器支撑的兼容性依赖门面。"""
+"""FastAPI dependency injection — lru_cache singletons."""
 
 import sys
 from functools import lru_cache
 
 from src.agent.react_loop import ReActAgent
-from src.application.ingestion_service import DocumentIngestionService
-from src.application.requirement_services import (
-    RequirementAnalysisService,
-    TestCaseGenerationService,
-)
-from src.bootstrap import AppContainer
-from src.embedding.base import BaseEmbedder
-from src.llm.base import BaseLLM
-from src.retriever.reranker_base import BaseReranker
+from src.agent.tool_factory import build_agent_tools
+from src.core.config import get_config
+from src.embedding.factory import get_embedder
+from src.ingestion.chunker import ChineseChunker
+from src.ingestion.cleaner import TextCleaner
+from src.ingestion.loader import DocumentLoader
+from src.ingestion.pipeline import IngestionPipeline
+from src.llm.factory import get_llm
+from src.mobile.driver import AppiumDriverManager
+from src.retriever.dense_retriever import DenseRetriever
+from src.retriever.reranker_factory import get_reranker
 from src.retriever.retrieval_engine import RetrievalEngine
-from src.vectordb.base import BaseVectorDB
+from src.services.artifact_repository import LocalArtifactRepository
+from src.services.ingestion_service import DocumentIngestionService
+from src.services.page_cache import PageCache
+from src.services.requirement_analysis import RequirementAnalysisService
+from src.workflows.execution import ExecutionWorkflow
+from src.workflows.testcase_design import TestCaseGenerationWorkflow
+from src.vectordb.factory import get_vectordb
 
 
 @lru_cache(maxsize=1)
-def get_container() -> AppContainer:
-    return AppContainer()
+def _llm(): return get_llm()
 
+@lru_cache(maxsize=1)
+def _embedder(): e = get_embedder(); e.load(); return e
 
-def get_singleton_embedder() -> BaseEmbedder:
-    return get_container().get_embedder()
+@lru_cache(maxsize=1)
+def _vectordb(): return get_vectordb()
 
+@lru_cache(maxsize=1)
+def _reranker(): return get_reranker()
 
-def get_singleton_vectordb() -> BaseVectorDB:
-    return get_container().get_vectordb()
+@lru_cache(maxsize=1)
+def _retrieval_engine(): return RetrievalEngine(DenseRetriever(_embedder(), _vectordb()), _reranker())
 
+@lru_cache(maxsize=1)
+def _artifacts():
+    cfg = get_config().get("artifacts", {})
+    return LocalArtifactRepository(base_dir=cfg.get("base_dir", "./outputs"))
 
-def get_singleton_llm() -> BaseLLM:
-    return get_container().get_llm()
+@lru_cache(maxsize=1)
+def _loader(): return DocumentLoader()
 
+@lru_cache(maxsize=1)
+def _cleaner(): return TextCleaner()
 
-def get_singleton_reranker() -> BaseReranker:
-    return get_container().get_reranker()
+@lru_cache(maxsize=1)
+def _driver_manager(): return AppiumDriverManager()
 
+@lru_cache(maxsize=1)
+def _page_cache(): return PageCache()
 
-def get_retrieval_engine() -> RetrievalEngine:
-    return get_container().get_retrieval_engine()
+@lru_cache(maxsize=1)
+def get_ingestion_service():
+    return DocumentIngestionService(IngestionPipeline(_loader(), _cleaner(), ChineseChunker()), _vectordb(), _embedder())
 
+@lru_cache(maxsize=1)
+def get_requirement_analysis_service():
+    from src.agent.tools.requirement_graph_analyzer import RequirementGraphAnalyzerTool
+    return RequirementAnalysisService(_loader(), _cleaner(), _retrieval_engine(), RequirementGraphAnalyzerTool(llm=_llm()), _artifacts())
 
-def get_agent(profile_name: str | None = None) -> ReActAgent:
-    return get_container().get_agent(profile_name)
+@lru_cache(maxsize=1)
+def get_test_case_generation_service():
+    wf = TestCaseGenerationWorkflow.create_default(_loader(), _cleaner(), _retrieval_engine(), _artifacts(), _llm())
+    return wf
 
+@lru_cache(maxsize=1)
+def get_mobile_workflow():
+    return ExecutionWorkflow(driver_manager=_driver_manager(), page_cache=_page_cache(), artifacts=_artifacts())
 
-def get_requirement_analysis_service() -> RequirementAnalysisService:
-    return get_container().get_requirement_analysis_service()
+@lru_cache(maxsize=2)
+def get_agent(profile_name=None):
+    from omegaconf import OmegaConf
+    cfg = get_config().get("agent", {})
+    profiles = cfg.get("profiles", {})
+    
+    if not profile_name and "qa_agent" in profiles:
+        cfg_agent = profiles["qa_agent"]
+        if OmegaConf.is_config(cfg_agent):
+            cfg_agent = OmegaConf.to_container(cfg_agent, resolve=True)
+    elif profile_name and profile_name in profiles:
+        cfg_agent = profiles[profile_name]
+        if OmegaConf.is_config(cfg_agent):
+            cfg_agent = OmegaConf.to_container(cfg_agent, resolve=True)
+    elif profile_name:
+        raise ValueError(f"Unknown agent profile: {profile_name}")
+    else:
+        cfg_agent = cfg
+    
+    raw_tools = cfg_agent.get("tools", [])
+    if OmegaConf.is_config(raw_tools):
+        raw_tools = OmegaConf.to_container(raw_tools, resolve=True)
+    
+    tools = build_agent_tools(_retrieval_engine(), raw_tools, llm=_llm(),
+        test_case_generation_service=get_test_case_generation_service(),
+        mobile_execution_service=get_mobile_workflow(),
+        driver_manager=_driver_manager(), page_cache=_page_cache(),
+        loader=_loader(), cleaner=_cleaner())
+    
+    return ReActAgent(llm=_llm(), tools=tools,
+        system_prompt=cfg_agent.get("system_prompt", "") or "",
+        max_iterations=int(cfg_agent.get("max_iterations", 10)),
+        max_history_tokens=int(cfg_agent.get("max_history_tokens", 4000)))
 
-
-def get_test_case_generation_service() -> TestCaseGenerationService:
-    return get_container().get_test_case_generation_service()
-
-
-def get_document_ingestion_service() -> DocumentIngestionService:
-    return get_container().get_ingestion_service()
-
-
-def clear_all_caches() -> None:
-    """清理所有缓存单例；测试之间调用以保持隔离。"""
+def clear_all_caches():
     _this = sys.modules[__name__]
-    for name in ("get_container",):
+    for name in ("_llm", "_embedder", "_vectordb", "_reranker", "_retrieval_engine",
+                 "_artifacts", "_loader", "_cleaner", "_driver_manager", "_page_cache",
+                 "get_ingestion_service", "get_requirement_analysis_service",
+                 "get_test_case_generation_service", "get_mobile_workflow", "get_agent"):
         fn = getattr(_this, name, None)
-        clear = getattr(fn, "cache_clear", None)
-        if clear is not None:
-            clear()
+        if fn and hasattr(fn, "cache_clear"):
+            fn.cache_clear()

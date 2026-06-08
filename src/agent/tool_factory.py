@@ -26,15 +26,9 @@ from src.agent.tools.mobile.action_tool import ActionTool
 from src.agent.tools.mobile.assertion_tool import AssertionTool
 from src.agent.tools.mobile.device_tool import DeviceTool
 from src.agent.tools.mobile.screen_tool import ScreenTool
-from src.agent.tools.requirement_graph_analyzer import RequirementGraphAnalyzerTool
-from src.agent.tools.requirement_parser import RequirementParserTool
-from src.agent.tools.requirement_reviewer import RequirementReviewerTool
-from src.agent.tools.search_kb import KnowledgeBaseTool
 from src.agent.tools.search_knowledge import SearchKnowledgeTool
-from src.agent.tools.web_search import WebSearchTool
-from src.agent.tools.write_test_cases import WriteTestCasesTool
-from src.application.execution_service import MobileExecutionService
-from src.application.requirement_services import TestCaseGenerationService
+from src.workflows.execution import ExecutionWorkflow
+from src.workflows.testcase_design import TestCaseGenerationWorkflow
 from src.core.logging import get_logger
 from src.ingestion.cleaner import TextCleaner
 from src.ingestion.loader import DocumentLoader
@@ -93,8 +87,8 @@ def build_agent_tools(
     retrieval_engine: RetrievalEngine,
     tool_configs: list[Any] | None = None,
     llm: BaseLLM | None = None,
-    test_case_generation_service: TestCaseGenerationService | None = None,
-    mobile_execution_service: MobileExecutionService | None = None,
+    test_case_generation_service: TestCaseGenerationWorkflow | None = None,
+    mobile_execution_service: ExecutionWorkflow | None = None,
     driver_manager: AppiumDriverManager | None = None,
     page_cache: PageCache | None = None,
     loader: DocumentLoader | None = None,
@@ -118,14 +112,10 @@ def build_agent_tools(
     """
     configs = tool_configs or list(_DEFAULT_TOOLS)
 
-    def _get_mobile_runtime() -> tuple[AppiumDriverManager, PageCache]:
-        if driver_manager is not None and page_cache is not None:
-            return driver_manager, page_cache
-        shared_driver_mgr, shared_page_cache = _get_mobile_singletons()
-        return (
-            driver_manager if driver_manager is not None else shared_driver_mgr,
-            page_cache if page_cache is not None else shared_page_cache,
-        )
+    def _require_mobile_runtime(tool_name: str) -> tuple[AppiumDriverManager, PageCache]:
+        if driver_manager is None or page_cache is None:
+            raise RuntimeError(f"{tool_name} requires driver_manager and page_cache; these are injected by dependencies.")
+        return driver_manager, page_cache
 
     def _build_qwen_vlm():
         """若已配置则返回 QwenVisionProvider，否则返回 None。"""
@@ -147,9 +137,6 @@ def build_agent_tools(
         return llm
 
     # 工厂函数接收 (description_override, system_prompt) 作为上下文
-    def _make_knowledge_search(_desc: str | None, _sp: str | None) -> BaseTool:
-        return KnowledgeBaseTool(retrieval_engine)
-
     def _make_search_knowledge(_desc: str | None, _sp: str | None) -> BaseTool:
         return SearchKnowledgeTool(retrieval_engine)
 
@@ -222,39 +209,29 @@ def build_agent_tools(
         return RequirementReviewerTool(_llm, system_prompt=sys_prompt or None)
 
     def _make_device_tool(_desc: str | None, _sp: str | None) -> BaseTool:
-        driver_mgr, _ = _get_mobile_runtime()
-        return DeviceTool(driver_manager=driver_mgr)
+        dm, _ = _require_mobile_runtime("device_tool")
+        return Device_ToolTool(driver_manager=dm)
 
     def _make_screen_tool(_desc: str | None, _sp: str | None) -> BaseTool:
-        driver_mgr, page_cache = _get_mobile_runtime()
+        dm, pc = _require_mobile_runtime("screen_tool")
         vlm = _build_qwen_vlm()
-        return ScreenTool(driver_manager=driver_mgr, page_cache=page_cache, vlm=vlm)
+        return ScreenTool(driver_manager=dm, page_cache=pc, vlm=vlm)
 
     def _make_action_tool(_desc: str | None, _sp: str | None) -> BaseTool:
-        driver_mgr, page_cache = _get_mobile_runtime()
-        return ActionTool(driver_manager=driver_mgr, page_cache=page_cache)
+        dm, pc = _require_mobile_runtime("action_tool")
+        return ActionTool(driver_manager=dm, page_cache=pc)
 
     def _make_assertion_tool(_desc: str | None, _sp: str | None) -> BaseTool:
-        driver_mgr, _ = _get_mobile_runtime()
-        return AssertionTool(driver_manager=driver_mgr)
+        dm, _ = _require_mobile_runtime("assertion_tool")
+        return Assertion_ToolTool(driver_manager=dm)
 
     def _make_execute_scenario(_desc: str | None, _sp: str | None) -> BaseTool | None:
         if mobile_execution_service is None:
             logger.warning("service_required_for_tool_skipped", tool="execute_scenario")
             return None
-        return ExecuteScenarioTool(service=mobile_execution_service)
+        return ExecuteScenarioTool(workflow=mobile_execution_service)
 
-    factories: dict[str, Callable[[str | None, str | None], BaseTool | None]] = {
-        "knowledge_search": _make_knowledge_search,
-        "search_knowledge": _make_search_knowledge,
-        "web_search": _make_web_search,
-        "write_test_cases": _make_write_test_cases,
-        "design_test_cases": _make_design_test_cases,
-        "analyze_requirements": _make_analyze_requirements,
-        "analyze_requirement": _make_analyze_requirement,
-        "requirement_parser": _make_requirement_parser,
-        "requirement_reviewer": _make_requirement_reviewer,
-        "device_tool": _make_device_tool,
+    factories: dict[str, Callable[[str | None, str | None], BaseTool | None]] = {        "search_knowledge": _make_search_knowledge,        "design_test_cases": _make_design_test_cases,        "analyze_requirement": _make_analyze_requirement,        "device_tool": _make_device_tool,
         "screen_tool": _make_screen_tool,
         "action_tool": _make_action_tool,
         "assertion_tool": _make_assertion_tool,

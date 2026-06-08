@@ -240,3 +240,35 @@ api:
 logging:
   json_format: true
   level: "INFO"
+
+# ═══════════════════════════════════════════════════════════════════════
+# LLM Prompts — 所有工具内部 LLM 调用提示词集中管理。
+# 代码无硬编码回退。YAML 是唯一来源。
+# ═══════════════════════════════════════════════════════════════════════
+prompts:
+  requirement_ir: |
+    你是一名资深软件测试工程师，专注于需求结构化解析。将需求文档转换为 RequirementIR JSON。
+    只输出 JSON 对象，不加 Markdown。
+    JSON: {"module":"", "summary":"", "actors":[{"name":"","role":""}], "features":[{"id":"F001","name":"","description":"","priority":"P0/P1/P2","acceptance_criteria":[],"test_hints":[],"dependencies":[]}], "business_rules":[{"id":"R001","description":"","condition":"IF","outcome":"THEN","related_features":[]}], "state_machines":[{"entity":"","states":[],"initial_state":"","transitions":[{"from_state":"","to_state":"","trigger":"","guard":""}]}], "data_entities":[{"name":"","fields":[{"name":"","field_type":"string","constraints":[],"required":true}]}], "out_of_scope":[]}
+    acceptance_criteria 必须具体可验证。test_hints 直接给出边界/异常场景。business_rules 用 IF/THEN 格式。
+
+  requirement_reviewer: |
+    你是一名资深测试架构师，对需求进行质量评审。识别歧义、缺口、风险，输出 JSON。
+    只输出 JSON 对象: {"overall_quality":"good|needs_clarification|poor","score":85,"ambiguities":[{"id":"A001","location":"F001","description":"","suggestion":""}],"gaps":[{"id":"G001","description":"","impact":"","question":""}],"risks":[{"area":"","level":"high|medium|low","description":"","mitigation":""}],"suggestions":[]}
+    good=80-100, needs_clarification=50-79, poor=0-49。
+
+  requirement_graph: |
+    你是一名资深软件测试工程师，从测试视角分析需求文档生成 RequirementGraph JSON。
+    只输出 JSON 对象: {"summary":"","actors":[],"features":[{"id":"F001","name":"","description":"","priority":"P0/P1/P2","risk_level":"high|medium|low","risk_reason":"","boundaries":[],"test_focus":[],"dependencies":[]}],"state_transitions":[{"entity":"","states":[],"transitions":[{"from":"","to":"","trigger":"","condition":""}]}],"risks":[{"area":"","level":"","description":"","suggestion":""}],"clarifications":[{"id":"Q001","question":"","context":"","impact":""}],"test_strategy":{"scope":"","focus_areas":[],"exclusions":[],"suggestion":""}}
+    每个独立用户操作拆一个 feature。risk_level: high=安全/权限/并发, medium=一般, low=纯展示。
+
+  test_case_generation: |
+    你是资深软件测试工程师，根据需求文档编写测试用例，输出 JSON 数组。
+    字段: title/module/precondition/steps/expected/priority/type/notes。
+    steps 和 expected 必须是普通文本，多步骤用 1、2、3 编号。
+    automation 模式额外输出 data_setup/business_name/ui_display_name/page_route/locator_chain/anchor_text/search_strategy/expected_visibility/forbidden_locators/selectors/automation_steps/assertions。
+
+  vlm_screen: |
+    分析这个 Android 应用截图，识别所有可见 UI 元素。只输出 JSON 对象:
+    {"page_name":"","elements":[{"type":"button|input|text|image|list_item|tab|checkbox|icon","text":"","description":"","position":"top_left|top_center|..."}]}
+    只列出对测试有意义的元素（可点击、有文字、可输入）。
