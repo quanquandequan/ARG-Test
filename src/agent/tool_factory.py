@@ -20,13 +20,13 @@ from typing import Any
 
 from src.agent.base_tool import BaseTool
 from src.agent.tools.analyze_requirement import AnalyzeRequirementTool
-from src.agent.tools.analyze_requirements import AnalyzeRequirementsTool
 from src.agent.tools.design_test_cases import DesignTestCasesTool
 from src.agent.tools.execute_scenario import ExecuteScenarioTool
 from src.agent.tools.mobile.action_tool import ActionTool
 from src.agent.tools.mobile.assertion_tool import AssertionTool
 from src.agent.tools.mobile.device_tool import DeviceTool
 from src.agent.tools.mobile.screen_tool import ScreenTool
+from src.agent.tools.requirement_graph_analyzer import RequirementGraphAnalyzerTool
 from src.agent.tools.requirement_parser import RequirementParserTool
 from src.agent.tools.requirement_reviewer import RequirementReviewerTool
 from src.agent.tools.search_kb import KnowledgeBaseTool
@@ -184,7 +184,7 @@ def build_agent_tools(
         _llm = _require_llm("analyze_requirements")
         if _llm is None:
             return None
-        return AnalyzeRequirementsTool(_llm, system_prompt=sys_prompt or None)
+        return RequirementGraphAnalyzerTool(_llm, system_prompt=sys_prompt or None)
 
     def _make_analyze_requirement(
         _desc: str | None, sys_prompt: str | None

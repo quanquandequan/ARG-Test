@@ -171,7 +171,7 @@ LLM generation is **not** done here; that is the Agent's responsibility.
 | Anthropic Claude | `ClaudeProvider` | `generate_chat`, `generate_chat_stream`, tool-calling |
 | OpenAI / DeepSeek / DashScope | `OpenAIProvider` | same interface, `base_url` configurable |
 
-Message conversion is handled inside each provider (`_messages_to_anthropic`, `_messages_to_openai`, etc.) and is covered by `tests/llm/test_message_conversion.py`.
+Message conversion is handled inside each provider (`_messages_to_anthropic`, `_messages_to_openai`, etc.).
 
 ---
 

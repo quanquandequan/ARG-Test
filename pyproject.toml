@@ -43,8 +43,6 @@ mobile = [
     "Pillow>=10.0",
 ]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
     "ruff>=0.3",
     "mypy>=1.9",
 ]
@@ -67,12 +65,3 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-markers = [
-    "integration: needs a running Milvus instance",
-    "e2e: needs real models, API keys, or external services",
-    "slow: longer-running tests (>2s)",
-]

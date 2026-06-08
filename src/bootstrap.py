@@ -135,13 +135,15 @@ class AppContainer:
 
     def get_requirement_analysis_service(self) -> RequirementAnalysisService:
         if self._requirement_analysis_service is None:
-            from src.agent.tools.analyze_requirements import AnalyzeRequirementsTool
+            from src.agent.tools.requirement_graph_analyzer import (
+                RequirementGraphAnalyzerTool,
+            )
 
             self._requirement_analysis_service = RequirementAnalysisService(
                 loader=self.get_loader(),
                 cleaner=self.get_cleaner(),
                 retrieval_engine=self.get_retrieval_engine(),
-                analyzer_tool=AnalyzeRequirementsTool(llm=self.get_llm()),
+                analyzer_tool=RequirementGraphAnalyzerTool(llm=self.get_llm()),
                 artifacts=self.get_artifact_repository(),
             )
         return self._requirement_analysis_service

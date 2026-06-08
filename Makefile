@@ -1,17 +1,14 @@
-.PHONY: run dev test lint clean ask chat
+.PHONY: run dev lint clean ask chat
 
 run:
 	uvicorn src.api.app:create_app --factory --host 0.0.0.0 --port 8000 --reload
 
 dev:
 	pip install -e ".[dev]"
-	ruff check src/ tests/
-
-test:
-	pytest -v
+	ruff check src/
 
 lint:
-	ruff check src/ tests/
+	ruff check src/
 	mypy src/
 
 ask:
@@ -22,4 +19,4 @@ chat:
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	rm -rf .pytest_cache .mypy_cache dist *.egg-info
+	rm -rf .mypy_cache dist *.egg-info

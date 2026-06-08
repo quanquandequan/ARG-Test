@@ -6,7 +6,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from src.agent.tools.analyze_requirements import AnalyzeRequirementsTool
+from src.agent.tools.requirement_graph_analyzer import RequirementGraphAnalyzerTool
 from src.application.artifact_repository import LocalArtifactRepository
 from src.application.requirement_context import build_requirement_kb_context
 from src.application.workflows import TestCaseGenerationWorkflow
@@ -27,7 +27,7 @@ class RequirementAnalysisService:
         loader: DocumentLoader,
         cleaner: TextCleaner,
         retrieval_engine: RetrievalEngine,
-        analyzer_tool: AnalyzeRequirementsTool,
+        analyzer_tool: RequirementGraphAnalyzerTool,
         artifacts: LocalArtifactRepository,
     ):
         self._loader = loader

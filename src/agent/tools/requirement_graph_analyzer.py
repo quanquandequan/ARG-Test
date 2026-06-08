@@ -1,11 +1,11 @@
-"""需求分析工具：生成结构化 Requirement Graph。
+"""RequirementGraph 分析器：生成结构化需求图谱。
 
 工作流（由 Agent 编排）：
   1. Agent 调用 ``knowledge_search`` 检索背景信息。
      - 叭嗒 app 功能  → 搜索 "功能名 测试用例"
      - 插件 / 基线    → 搜索 "功能名 xmind"
   2. Agent 携带需求文本和 KB 搜索结果（``kb_context``）
-     调用 ``analyze_requirements``。
+     调用兼容工具名 ``analyze_requirements``。
   3. 本工具调用注入的 LLM 生成 RequirementGraph JSON，
      然后保存 <module>_<ts>_req_graph.json。
   4. 向 Agent 返回 JSON 文件路径和关键洞察。
@@ -162,7 +162,7 @@ _KB_SECTION_TEMPLATE = """\
 """
 
 
-class AnalyzeRequirementsTool(BaseTool):
+class RequirementGraphAnalyzerTool(BaseTool):
     """分析需求文档并生成结构化 Requirement Graph。
 
     本工具由 LLM 驱动：调用注入的语言模型抽取功能点、状态转换、

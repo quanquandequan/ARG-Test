@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.agent.base_tool import FINAL_ANSWER_PASSTHROUGH, BaseTool
 from src.agent.tool_result import ToolExecutionResult
-from src.agent.tools.analyze_requirements import AnalyzeRequirementsTool
+from src.agent.tools.requirement_graph_analyzer import RequirementGraphAnalyzerTool
 from src.agent.tools.requirement_parser import RequirementParserTool
 from src.agent.tools.requirement_reviewer import RequirementReviewerTool
 from src.application.requirement_context import build_requirement_kb_context
@@ -38,7 +38,7 @@ class AnalyzeRequirementTool(BaseTool):
         self._cleaner = cleaner or TextCleaner()
         self._parser_tool = RequirementParserTool(llm=llm)
         self._reviewer_tool = RequirementReviewerTool(llm=llm)
-        self._analyzer_tool = AnalyzeRequirementsTool(llm=llm)
+        self._analyzer_tool = RequirementGraphAnalyzerTool(llm=llm)
 
     @property
     def name(self) -> str:
@@ -172,7 +172,7 @@ class AnalyzeRequirementTool(BaseTool):
             module=resolved_module,
             output_dir=output_dir,
             request_id=request_id,
-            persist=(mode == "final"),
+            persist=False,
         )
         if parser_result.data is None:
             return _failed_result(
@@ -181,19 +181,14 @@ class AnalyzeRequirementTool(BaseTool):
                 request_id=request_id,
             )
 
-        ir_artifact = _first_artifact(parser_result.artifacts, ArtifactKind.REQUIREMENT_IR_JSON)
         reviewer_result = await self._reviewer_tool.execute_typed(
-            ir_file=str(ir_artifact.path) if ir_artifact else "",
-            ir_json=(
-                parser_result.data.model_dump_json()
-                if ir_artifact is None and parser_result.data is not None
-                else ""
-            ),
-            requirement=parser_requirement_text if ir_artifact is None else "",
+            ir_file="",
+            ir_json=parser_result.data.model_dump_json(),
+            requirement="",
             module=resolved_module,
             output_dir=output_dir,
             request_id=request_id,
-            persist=(mode == "final"),
+            persist=False,
         )
         if reviewer_result.data is None:
             return _failed_result(
@@ -237,13 +232,10 @@ class AnalyzeRequirementTool(BaseTool):
                 has_kb_context=bool(resolved_kb_context.strip()),
             )
 
-        artifacts = list(parser_result.artifacts)
-        artifacts.extend(reviewer_result.artifacts)
-        artifacts.extend(analyzer_result.artifacts)
+        artifacts = list(analyzer_result.artifacts)
 
         review = reviewer_result.data
         analysis = analyzer_result.data
-        review_md = _first_artifact(artifacts, ArtifactKind.REQUIREMENT_REVIEW_MARKDOWN)
         analysis_json = _first_artifact(artifacts, ArtifactKind.REQUIREMENT_ANALYSIS_JSON)
 
         lines = [
@@ -253,10 +245,6 @@ class AnalyzeRequirementTool(BaseTool):
             "确认补充：已合并用户针对待确认问题的答复。",
             "",
         ]
-        if ir_artifact is not None:
-            lines.append(f"RequirementIR：{ir_artifact.path}")
-        if review_md is not None:
-            lines.append(f"评审报告：{review_md.path}")
         if analysis_json is not None:
             lines.append(f"分析结果：{analysis_json.path}")
         lines += [
@@ -376,7 +364,7 @@ def _draft_result(
         f"需求分析草稿（待确认）：{module}",
         f"需求事实源：{requirement_source}",
         "产物状态：草稿阶段未生成最终 JSON，不可直接用于生成测试用例。",
-        "下一步：请先回答下方待确认问题；收到答复后我会生成确认版需求分析 JSON。",
+        "下一步：请逐条回答下方“需求确认问题”；收到答复后我会生成确认版需求分析 JSON。",
         "",
         f"摘要：{parser_result.data.summary}",
     ]
@@ -388,14 +376,7 @@ def _draft_result(
 
     if review is not None:
         lines += ["", f"质量评分：{review.score}/100（{review.overall_quality}）"]
-        if review.ambiguities:
-            lines += ["", "需确认的歧义："]
-            for ambiguity in review.ambiguities[:5]:
-                lines.append(f"  [{ambiguity.id}] {ambiguity.description}")
-        if review.gaps:
-            lines += ["", "需补充的信息："]
-            for gap in review.gaps[:5]:
-                lines.append(f"  [{gap.id}] {gap.question}")
+        _append_confirmation_questions(lines, review, analysis)
 
     if analysis is not None:
         lines += [
@@ -423,6 +404,49 @@ def _draft_result(
             ),
         },
     )
+
+
+def _append_confirmation_questions(lines: list[str], review, analysis) -> None:
+    """将歧义、缺口和分析器澄清项合并为用户可直接回答的问题清单。"""
+    questions: list[tuple[str, str]] = []
+    for ambiguity in review.ambiguities[:5]:
+        questions.append((
+            ambiguity.id,
+            f"{ambiguity.description} 请确认具体规则。",
+        ))
+    for gap in review.gaps[:5]:
+        questions.append((gap.id, gap.question))
+
+    graph = analysis.graph if analysis is not None else {}
+    clarifications = graph.get("clarifications", []) if isinstance(graph, dict) else []
+    existing_ids = {item[0] for item in questions}
+    for item in clarifications:
+        question_id = str(item.get("id") or "").strip()
+        question = str(item.get("question") or "").strip()
+        if not question or question_id in existing_ids:
+            continue
+        questions.append((question_id or "Q", question))
+        existing_ids.add(question_id)
+        if len(questions) >= 8:
+            break
+
+    if not questions:
+        lines += [
+            "",
+            "需求确认问题：",
+            "  无必须确认的问题；如你确认草稿内容无误，可以回复“确认”。",
+        ]
+        return
+
+    lines += [
+        "",
+        "需求确认问题：",
+        "请按编号逐条回答，回答完成后我会基于你的确认生成 confirmed 需求分析 JSON。",
+    ]
+    for idx, (question_id, question) in enumerate(questions, start=1):
+        prefix = f"  {idx}. "
+        source = f"（来源：{question_id}）" if question_id else ""
+        lines.append(f"{prefix}{question}{source}")
 
 
 def _append_analysis_reference_summary(lines: list[str], graph: dict) -> None:
