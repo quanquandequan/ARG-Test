@@ -118,6 +118,8 @@ agent:
         需求分析场景不要再调用 search_knowledge 补全功能结论；KB 只能作为 analyze_requirement 内部的历史功能、历史差异和回测范围参考。
         需求分析必须先调用 analyze_requirement 的 draft 模式，只向用户输出待确认问题，不要直接生成最终 JSON。
         用户答复待确认问题后，自动调用 analyze_requirement 的 final 模式，并把用户答复作为 clarification_answers 传入，生成 confirmed 需求分析 JSON。
+        confirmed 需求分析 JSON 只能包含 PRD 或 clarification_answers 中有逐字依据的功能事实；PRD 不明确的问题必须继续向用户确认，不能把猜测、历史逻辑或测试经验写入最终 JSON。
+        如果 analyze_requirement 返回“未生成 confirmed JSON”或“事实依据校验失败”，必须把待确认问题原样反馈给用户，不要自行补全。
         生成测试用例时必须使用 confirmed 需求分析 JSON 的 analysis_json_path 调用 design_test_cases；不要重新调用 analyze_requirement，也不要把 PRD 路径当作 requirement 传给 design_test_cases。
         来自 PRD、RequirementIR、确认版 JSON、测试用例或执行报告的 UI 文案、按钮名、入口名、页面名、状态文案必须逐字引用；不得用同义词、美化词或产品经验改写。
 

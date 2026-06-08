@@ -21,11 +21,13 @@ RequirementGraph JSON schema：
       "risk_reason": str,
       "boundaries": [str],
       "test_focus": [str],
-      "dependencies": [str]
+      "dependencies": [str],
+      "evidence": [{"field": str, "source": "prd"|"confirmation", "quote": str}]
     }],
     "state_transitions": [{
       "entity": str, "states": [str],
-      "transitions": [{"from": str, "to": str, "trigger": str, "condition": str}]
+      "transitions": [{"from": str, "to": str, "trigger": str, "condition": str}],
+      "evidence": [{"field": str, "source": "prd"|"confirmation", "quote": str}]
     }],
     "risks": [{"area": str, "level": str, "description": str, "suggestion": str}],
     "clarifications": [{"id": str, "question": str, "context": str, "impact": str}],
@@ -52,6 +54,8 @@ from src.llm.types import Message
 logger = get_logger(__name__)
 
 _DEFAULT_OUTPUT_DIR = "./outputs/requirements"
+_EVIDENCE_SOURCES = {"prd", "confirmation"}
+_VALIDATION_RETRY_LIMIT = 1
 
 # ── LLM 提示词 ───────────────────────────────────────────────────────────────
 
@@ -70,6 +74,22 @@ _SYSTEM_PROMPT = """\
 - 知识库中的旧页面、旧功能、旧登录态、旧分页、旧跳转、旧文案只能用于
   “历史功能 / 历史差异 / 回测范围”分析，不得写入 features。
 
+## 事实证据规则（非常重要）
+- features 中的 description、每一条 boundaries、每一条 test_focus，都必须能追溯到
+  需求文档或用户确认答复。
+- 每个 feature 必须提供 evidence 数组。evidence 只能使用以下 source：
+  - "prd"：quote 必须逐字摘自【需求文档内容】
+  - "confirmation"：quote 必须逐字摘自【用户确认补充】
+- evidence.field 必须指向被证明的字段，例如：
+  - "description"
+  - "boundaries[0]"
+  - "test_focus[1]"
+- quote 必须是原文短句，不能改写、概括或补写。
+- 如果某个功能、边界、状态、文案、默认值、重试、缓存、空态、接口策略等
+  在需求文档和用户确认答复中找不到逐字或明确依据，不得写入 features；
+  应写入 clarifications 向用户确认。
+- 知识库、历史测试用例、Bug、XMind 不能作为 features 的 evidence。
+
 ## 输出格式（严格遵守）
 只输出 JSON 对象，不加任何 Markdown 标记或解释文字。
 
@@ -87,7 +107,19 @@ JSON 结构如下：
       "risk_reason": "高风险时必填，说明原因",
       "boundaries": ["边界条件1", "边界条件2"],
       "test_focus": ["测试重点1", "测试重点2"],
-      "dependencies": ["F002"]
+      "dependencies": ["F002"],
+      "evidence": [
+        {
+          "field": "description",
+          "source": "prd",
+          "quote": "需求文档中的逐字原文短句"
+        },
+        {
+          "field": "boundaries[0]",
+          "source": "confirmation",
+          "quote": "用户确认答复中的逐字原文短句"
+        }
+      ]
     }
   ],
   "state_transitions": [
@@ -100,6 +132,13 @@ JSON 结构如下：
           "to": "状态B",
           "trigger": "触发事件",
           "condition": "前提条件（无则填空字符串）"
+        }
+      ],
+      "evidence": [
+        {
+          "field": "transitions[0]",
+          "source": "prd",
+          "quote": "需求文档中的逐字原文短句"
         }
       ]
     }
@@ -133,10 +172,12 @@ JSON 结构如下：
   - priority：P0=核心主流程，P1=重要功能，P2=边缘/辅助功能
   - risk_level：high=复杂逻辑/并发/权限/安全/金融，medium=一般功能，low=纯展示
 - state_transitions：识别有明显状态变化的业务实体（订单、账户、内容审核状态等）
+  - 每条 transitions 都必须有 evidence，且 evidence quote 必须来自需求文档或用户确认答复
 - risks：至少包含2个，按 level 降序排列
 - clarifications：需求模糊、缺失、矛盾之处，列出具体可回答的问题
 - 结合知识库背景信息，对比现有功能逻辑，重点标注变更点和潜在回归风险；
   但所有功能点必须能在需求文档中找到依据
+- confirmed 阶段如果仍有关键逻辑不清楚，必须输出 clarifications，不要把推测写入 features
 """
 
 _USER_TEMPLATE = """\
@@ -298,24 +339,76 @@ class RequirementGraphAnalyzerTool(BaseTool):
             Message(role="user", content=user_content),
         ]
 
-        # 2. 调用 LLM
-        response = await self._llm.generate_chat(
-            messages=messages,
-            temperature=self._temperature,
-            max_tokens=self._max_tokens,
-        )
-        raw = response.content.strip()
-
-        # 3. 解析 RequirementGraph JSON
-        graph = self._parse_graph(raw, module)
-        if graph is None:
-            logger.warning(
-                "analyze_requirements_parse_failed",
-                module=module,
-                raw=raw[:200],
+        # 2. 调用 LLM，并在 confirmed 落盘前执行证据校验。
+        graph: dict | None = None
+        raw = ""
+        validation_errors: list[str] = []
+        should_validate = _should_validate_confirmed(persist, analysis_status)
+        for attempt in range(_VALIDATION_RETRY_LIMIT + 1):
+            response = await self._llm.generate_chat(
+                messages=messages,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
             )
+            raw = response.content.strip()
+
+            # 3. 解析 RequirementGraph JSON
+            graph = self._parse_graph(raw, module)
+            if graph is None:
+                logger.warning(
+                    "analyze_requirements_parse_failed",
+                    module=module,
+                    raw=raw[:200],
+                )
+                return ToolExecutionResult(
+                    content=(
+                        "LLM 未能生成有效的 RequirementGraph，"
+                        "请检查需求文档内容后重试。"
+                    )
+                )
+
+            validation_errors = (
+                _validate_confirmed_graph(
+                    graph,
+                    requirement=requirement,
+                    clarification_answers=clarification_answers,
+                )
+                if should_validate
+                else []
+            )
+            if not validation_errors:
+                break
+            if attempt < _VALIDATION_RETRY_LIMIT:
+                logger.info(
+                    "analyze_requirements_evidence_retry",
+                    module=module,
+                    error_count=len(validation_errors),
+                )
+                messages = [
+                    *messages,
+                    Message(role="assistant", content=raw),
+                    Message(
+                        role="user",
+                        content=_build_validation_retry_prompt(validation_errors),
+                    ),
+                ]
+
+        if graph is None:
             return ToolExecutionResult(
                 content="LLM 未能生成有效的 RequirementGraph，请检查需求文档内容后重试。"
+            )
+        if validation_errors:
+            logger.warning(
+                "analyze_requirements_evidence_validation_failed",
+                module=module,
+                error_count=len(validation_errors),
+            )
+            return ToolExecutionResult(
+                content=_render_validation_failure(validation_errors),
+                metadata={
+                    "request_id": request_id,
+                    "validation_error_count": len(validation_errors),
+                },
             )
 
         # 4. 添加 meta 区块
@@ -328,9 +421,12 @@ class RequirementGraphAnalyzerTool(BaseTool):
                 "confirmed" if persist else "draft"
             ),
             "clarification_answers_used": bool(clarification_answers.strip()),
+            "evidence_validated": should_validate,
         }
         if requirement_source_path.strip():
             graph["_meta"]["requirement_source_path"] = requirement_source_path.strip()
+        if clarification_answers.strip():
+            graph["_meta"]["clarification_answers"] = clarification_answers.strip()
         if persist:
             graph["_meta"]["confirmed_at"] = datetime.now().isoformat()
 
@@ -430,6 +526,239 @@ def _normalise_graph(data: dict, module: str) -> dict:
             {"scope": "", "focus_areas": [], "exclusions": [], "suggestion": ""},
         ),
     }
+
+
+def _should_validate_confirmed(persist: bool, analysis_status: str) -> bool:
+    """判断当前调用是否需要执行 confirmed 产物事实校验。"""
+    status = analysis_status.strip().lower()
+    return status == "confirmed" or (persist and status != "draft")
+
+
+def _validate_confirmed_graph(
+    graph: dict,
+    *,
+    requirement: str,
+    clarification_answers: str,
+) -> list[str]:
+    """校验 confirmed RequirementGraph 中的需求事实都有原文证据。"""
+    errors: list[str] = []
+    source_texts = {
+        "prd": _normalise_evidence_text(requirement),
+        "confirmation": _normalise_evidence_text(clarification_answers),
+    }
+
+    clarifications = graph.get("clarifications", [])
+    if _has_non_empty_items(clarifications):
+        errors.append(
+            "confirmed JSON 中仍包含待澄清问题。请先让用户确认这些问题，"
+            "不要把未确认需求落为最终 JSON。"
+        )
+
+    features = graph.get("features", [])
+    if not isinstance(features, list) or not features:
+        errors.append("confirmed JSON 必须包含至少一个 features 功能点。")
+        return errors
+
+    for feature_idx, feature in enumerate(features, start=1):
+        if not isinstance(feature, dict):
+            errors.append(f"features[{feature_idx - 1}] 不是对象，无法校验证据。")
+            continue
+        feature_label = str(feature.get("id") or f"F{feature_idx:03d}")
+        evidence = _normalise_evidence_items(feature.get("evidence"))
+        if not evidence:
+            errors.append(f"{feature_label} 缺少 evidence，不能写入 confirmed JSON。")
+            continue
+
+        _validate_required_field_evidence(
+            errors,
+            item_label=feature_label,
+            field="description",
+            evidence=evidence,
+            source_texts=source_texts,
+        )
+        boundaries = feature.get("boundaries", [])
+        if isinstance(boundaries, list):
+            for idx, value in enumerate(boundaries):
+                if str(value).strip():
+                    _validate_required_field_evidence(
+                        errors,
+                        item_label=feature_label,
+                        field=f"boundaries[{idx}]",
+                        evidence=evidence,
+                        source_texts=source_texts,
+                    )
+        test_focus = feature.get("test_focus", [])
+        if isinstance(test_focus, list):
+            for idx, value in enumerate(test_focus):
+                if str(value).strip():
+                    _validate_required_field_evidence(
+                        errors,
+                        item_label=feature_label,
+                        field=f"test_focus[{idx}]",
+                        evidence=evidence,
+                        source_texts=source_texts,
+                    )
+
+    _validate_state_transition_evidence(
+        errors,
+        graph.get("state_transitions", []),
+        source_texts,
+    )
+    return errors
+
+
+def _validate_state_transition_evidence(
+    errors: list[str],
+    state_transitions,
+    source_texts: dict[str, str],
+) -> None:
+    """校验状态转换条目是否具备 PRD 或用户确认答复证据。"""
+    if not isinstance(state_transitions, list):
+        return
+    for entity_idx, entity in enumerate(state_transitions):
+        if not isinstance(entity, dict):
+            continue
+        transitions = entity.get("transitions", [])
+        if not isinstance(transitions, list):
+            continue
+        evidence = _normalise_evidence_items(entity.get("evidence"))
+        entity_name = str(entity.get("entity") or f"state_transitions[{entity_idx}]")
+        for idx, transition in enumerate(transitions):
+            if not isinstance(transition, dict) or not transition:
+                continue
+            _validate_required_field_evidence(
+                errors,
+                item_label=entity_name,
+                field=f"transitions[{idx}]",
+                evidence=evidence,
+                source_texts=source_texts,
+            )
+
+
+def _validate_required_field_evidence(
+    errors: list[str],
+    *,
+    item_label: str,
+    field: str,
+    evidence: list[dict[str, str]],
+    source_texts: dict[str, str],
+) -> None:
+    """校验指定字段是否有可在事实源中找到的 evidence quote。"""
+    candidates = [
+        item for item in evidence
+        if _evidence_field_matches(item.get("field", ""), field)
+    ]
+    if not candidates:
+        errors.append(f"{item_label}.{field} 缺少 evidence。")
+        return
+    if not any(_evidence_quote_is_valid(item, source_texts) for item in candidates):
+        errors.append(
+            f"{item_label}.{field} 的 evidence quote 未在 PRD 或用户确认答复中找到。"
+        )
+
+
+def _normalise_evidence_items(raw) -> list[dict[str, str]]:
+    """把 LLM 输出的 evidence 规整为字典列表。"""
+    if not isinstance(raw, list):
+        return []
+    items: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "field": str(item.get("field") or "").strip(),
+            "source": str(item.get("source") or "").strip().lower(),
+            "quote": str(item.get("quote") or "").strip(),
+        })
+    return items
+
+
+def _evidence_field_matches(actual: str, expected: str) -> bool:
+    """判断 evidence.field 是否指向目标字段。"""
+    actual = actual.strip()
+    if actual == expected:
+        return True
+    if expected.startswith("transitions["):
+        return actual in {"transitions", "state_transitions"} or actual == expected
+    return False
+
+
+def _evidence_quote_is_valid(
+    item: dict[str, str],
+    source_texts: dict[str, str],
+) -> bool:
+    """判断 evidence quote 是否能在声明的事实源中找到。"""
+    source = item.get("source", "")
+    quote = _normalise_evidence_text(item.get("quote", ""))
+    if source not in _EVIDENCE_SOURCES or not quote:
+        return False
+    source_text = source_texts.get(source, "")
+    return bool(source_text) and quote in source_text
+
+
+def _normalise_evidence_text(text: str) -> str:
+    """规整空白和中英文引号，让短句包含判断更稳定。"""
+    normalised = str(text or "")
+    replacements = {
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "，": ",",
+        "。": ".",
+        "：": ":",
+        "；": ";",
+        "（": "(",
+        "）": ")",
+    }
+    for src, dst in replacements.items():
+        normalised = normalised.replace(src, dst)
+    return re.sub(r"\s+", "", normalised)
+
+
+def _has_non_empty_items(value) -> bool:
+    """判断列表或对象中是否存在有效内容。"""
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if isinstance(item, dict):
+            if any(str(val).strip() for val in item.values()):
+                return True
+        elif str(item).strip():
+            return True
+    return False
+
+
+def _build_validation_retry_prompt(errors: list[str]) -> str:
+    """构造一次自动修正提示，要求 LLM 删除无依据事实或补充合法 evidence。"""
+    rendered_errors = "\n".join(f"- {error}" for error in errors[:20])
+    return (
+        "上一次 RequirementGraph 未通过 confirmed 事实证据校验：\n"
+        f"{rendered_errors}\n\n"
+        "请重新输出完整 JSON，并严格遵守：\n"
+        "1. features.description、每条 boundaries、每条 test_focus、"
+        "每条 state_transitions.transitions 都必须提供 evidence。\n"
+        "2. evidence.quote 必须逐字摘自【需求文档内容】或【用户确认补充】。\n"
+        "3. 找不到证据的内容必须删除，或改为 clarifications 向用户确认。\n"
+        "4. 如果仍有待澄清问题，不要把推测写成 confirmed 功能事实。\n"
+        "只输出修正后的 JSON 对象。"
+    )
+
+
+def _render_validation_failure(errors: list[str]) -> str:
+    """渲染 confirmed 产物事实校验失败信息。"""
+    lines = [
+        "需求分析未生成 confirmed JSON：最终产物未通过事实依据校验。",
+        "我没有保存 JSON，因为以下内容缺少 PRD 或用户确认答复中的逐字依据：",
+        "",
+    ]
+    for idx, error in enumerate(errors[:20], start=1):
+        lines.append(f"{idx}. {error}")
+    lines += [
+        "",
+        "请补充或确认上述问题后，再生成确认版需求分析 JSON。",
+    ]
+    return "\n".join(lines)
 
 
 def _save_json(graph: dict, path: Path) -> None:
