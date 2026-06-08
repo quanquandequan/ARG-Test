@@ -1,4 +1,4 @@
-"""Tests for AnalyzeRequirementsTool and its integration with tool_factory."""
+"""AnalyzeRequirementsTool 及其与 tool_factory 集成的测试。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from src.agent.tools.analyze_requirements import (
     AnalyzeRequirementsTool,
     _normalise_graph,
     _save_json,
-    _save_markdown,
 )
 from src.llm.types import ChatResponse
 from src.retriever.dense_retriever import DenseRetriever
@@ -81,7 +80,7 @@ _VALID_GRAPH_JSON = json.dumps({
 
 @pytest.fixture
 def llm_with_valid_graph() -> FakeLLM:
-    """FakeLLM that returns a valid RequirementGraph JSON."""
+    """返回有效 RequirementGraph JSON 的 FakeLLM。"""
     return FakeLLM(response_text=_VALID_GRAPH_JSON)
 
 
@@ -114,14 +113,14 @@ def test_tool_schema_has_required_requirement(tool):
 # ── Successful execution ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_execute_creates_json_and_md_files(tool, tmp_path):
+async def test_execute_creates_json_file_only(tool, tmp_path):
     result = await tool.execute(requirement=_MINIMAL_REQ, module="登录")
     json_files = list(tmp_path.glob("*_req_graph.json"))
     md_files = list(tmp_path.glob("*_analysis.md"))
     assert len(json_files) == 1, "Expected one JSON output"
-    assert len(md_files) == 1, "Expected one Markdown output"
+    assert md_files == []
     assert "JSON 文件" in result
-    assert "Markdown 报告" in result
+    assert "Markdown 报告" not in result
 
 
 @pytest.mark.asyncio
@@ -181,7 +180,7 @@ async def test_execute_result_contains_feature_and_risk_counts(tool):
 @pytest.mark.asyncio
 async def test_execute_result_highlights_high_risks(tool):
     result = await tool.execute(requirement=_MINIMAL_REQ, module="登录")
-    assert "安全认证" in result  # high risk area name
+    assert "安全认证" in result  # 高风险区域名称
 
 
 @pytest.mark.asyncio
@@ -204,6 +203,24 @@ async def test_kb_context_included_in_llm_prompt(tool, llm_with_valid_graph):
     last_msgs = llm_with_valid_graph.last_messages
     user_msg = next(m for m in last_msgs if m.role == "user")
     assert "历史用例" in user_msg.content
+
+
+@pytest.mark.asyncio
+async def test_prompt_declares_requirement_as_authoritative(tool, llm_with_valid_graph):
+    await tool.execute(
+        requirement=_MINIMAL_REQ,
+        kb_context="历史用例：登录按钮在页面底部",
+    )
+    sys_msg = next(m for m in llm_with_valid_graph.last_messages if m.role == "system")
+    user_msg = next(m for m in llm_with_valid_graph.last_messages if m.role == "user")
+
+    assert "需求文档内容】是唯一的业务事实来源" in sys_msg.content
+    assert "冲突时，必须以需求文档为准" in sys_msg.content
+    assert "不得写入 features" in sys_msg.content
+    assert "知识库不是本次需求的事实来源" in user_msg.content
+    assert user_msg.content.index("需求文档内容：") < user_msg.content.index(
+        "【历史知识库参考（辅助）】"
+    )
 
 
 @pytest.mark.asyncio
@@ -295,29 +312,6 @@ def test_save_json_valid_utf8(tmp_path):
     assert loaded["summary"] == graph["summary"]
 
 
-def test_save_markdown_contains_key_sections(tmp_path):
-    graph = json.loads(_VALID_GRAPH_JSON)
-    graph = _normalise_graph(graph, "登录")
-    path = tmp_path / "report.md"
-    _save_markdown(graph, path, "登录")
-    text = path.read_text(encoding="utf-8")
-    assert "# 需求分析报告" in text
-    assert "## 功能点清单" in text
-    assert "## 风险分析" in text
-    assert "## 待澄清问题" in text
-    assert "## 测试策略建议" in text
-
-
-def test_save_markdown_includes_state_transitions(tmp_path):
-    graph = json.loads(_VALID_GRAPH_JSON)
-    graph = _normalise_graph(graph, "登录")
-    path = tmp_path / "report.md"
-    _save_markdown(graph, path, "登录")
-    text = path.read_text(encoding="utf-8")
-    assert "登录状态" in text
-    assert "认证成功" in text
-
-
 # ── tool_factory integration ──────────────────────────────────────────────────
 
 def test_factory_registers_analyze_requirements(
@@ -360,7 +354,7 @@ def test_factory_description_override(fake_embedder, fake_vectordb, fake_reranke
 async def test_agent_calls_analyze_requirements(
     fake_embedder, fake_vectordb, fake_reranker
 ):
-    """Smoke test: Agent can route to analyze_requirements and return a result."""
+    """冒烟测试：Agent 可路由到 analyze_requirements 并返回结果。"""
     from src.agent.react_loop import ReActAgent
     from src.llm.types import ToolCall
 
@@ -384,7 +378,7 @@ async def test_agent_calls_analyze_requirements(
         usage={},
     )
 
-    # Third response needed if Agent reflects on tool output
+    # 如果 Agent 会反思工具输出，则需要第三个响应
     llm = FakeLLM(
         responses=[tool_call_resp, final_resp, final_resp],
     )

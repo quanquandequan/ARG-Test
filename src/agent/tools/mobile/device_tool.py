@@ -1,14 +1,14 @@
-"""DeviceTool — Appium device / session management.
+"""DeviceTool：Appium 设备 / 会话管理。
 
-Handles the lifecycle of an Android test session:
-  connect        Open a new Appium session (never auto-launches an app)
-  disconnect     Close the current session
-  list_devices   List connected ADB devices
-  list_packages  List installed packages on the device (supports keyword filter)
-  launch_app     Activate / start an installed app via activate_app
-  install_app    Push and install an APK
+处理 Android 测试会话的生命周期：
+  connect        打开新的 Appium 会话（永不自动启动应用）
+  disconnect     关闭当前会话
+  list_devices   列出已连接的 ADB 设备
+  list_packages  列出设备上已安装包（支持关键词过滤）
+  launch_app     通过 activate_app 激活 / 启动已安装应用
+  install_app    推送并安装 APK
 
-This tool is always called first in any mobile automation scenario.
+任何移动端自动化场景中都应先调用此工具。
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ class DeviceTool(BaseTool):
     def __init__(self, driver_manager: AppiumDriverManager) -> None:
         self._mgr = driver_manager
 
-    # ── Entry point ───────────────────────────────────────────────────────────
+    # ── 入口 ─────────────────────────────────────────────────────────────────
 
     async def execute(self, action: str = "", **kwargs) -> str:  # type: ignore[override]
         action = action.strip().lower()
@@ -96,7 +96,7 @@ class DeviceTool(BaseTool):
             "支持：connect / disconnect / list_devices / launch_app / install_app"
         )
 
-    # ── Actions ───────────────────────────────────────────────────────────────
+    # ── 操作 ─────────────────────────────────────────────────────────────────
 
     async def _connect(
         self,
@@ -107,10 +107,10 @@ class DeviceTool(BaseTool):
     ) -> str:
         cfg_mobile = get_config().get("mobile", {})
 
-        # Config values are authoritative; ignore LLM-supplied app_package / app_activity
-        # here — they are only used by launch_app, not during session creation.
+        # 配置值是权威来源；这里忽略 LLM 提供的 app_package / app_activity，
+        # 它们只由 launch_app 使用，不参与会话创建。
         server_url = server_url or cfg_mobile.get("appium_server_url", "http://localhost:4723")
-        # Use config device_name/platform_version; only fall back to args if config is empty
+        # 优先使用配置中的 device_name/platform_version；配置为空时才回退到参数。
         device_name = cfg_mobile.get("device_name", "") or device_name
         platform_version = str(cfg_mobile.get("platform_version", "")) or platform_version
 
@@ -118,10 +118,10 @@ class DeviceTool(BaseTool):
             "platformName": "Android",
             "appium:automationName": "UIAutomator2",
             "appium:newCommandTimeout": int(cfg_mobile.get("new_command_timeout", 300)),
-            # Do NOT set appPackage / appActivity here.
-            # Including them causes Appium to auto-launch the app via `am start-activity`,
-            # which fails for non-exported Activities (SecurityException on EMUI etc.).
-            # App launch is handled separately via launch_app / activate_app.
+            # 不要在这里设置 appPackage / appActivity。
+            # 设置后 Appium 会通过 `am start-activity` 自动启动应用，
+            # 对非 exported Activity 会失败（EMUI 等系统上抛 SecurityException）。
+            # 应用启动由 launch_app / activate_app 单独处理。
         }
         if device_name:
             caps["appium:deviceName"] = device_name
@@ -167,14 +167,14 @@ class DeviceTool(BaseTool):
         if not self._mgr.is_connected():
             return "错误：请先调用 connect 建立设备连接。"
 
-        # Fall back to YAML config when LLM omits the package name
+        # LLM 未提供包名时回退到 YAML 配置
         if not app_package:
             cfg_mobile = get_config().get("mobile", {})
             app_package = cfg_mobile.get("app_package", "")
         if not app_package:
             return "错误：必须提供 app_package 参数（或在 mobile.app_package 配置中设置）。"
         try:
-            # launch_app uses activate_app internally — no SecurityException risk
+            # launch_app 内部使用 activate_app，不存在 SecurityException 风险
             await self._mgr.launch_app(app_package)
             activity = await self._mgr.get_current_activity()
             return f"应用 {app_package} 已启动，当前 Activity：{activity or '未知'}"

@@ -1,4 +1,4 @@
-"""Document loader with format dispatch and multiprocessing support."""
+"""支持格式分发和多进程的文档加载器。"""
 
 from pathlib import Path
 
@@ -12,7 +12,7 @@ from src.ingestion.readers.xmind_reader import XmindReader
 
 
 class DocumentLoader:
-    """Load documents by dispatching to the appropriate reader based on extension."""
+    """根据扩展名分发到合适的 reader 来加载文档。"""
 
     def __init__(self, readers: list[BaseReader] | None = None):
         self._readers = readers or [

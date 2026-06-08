@@ -1,4 +1,4 @@
-"""Pydantic schemas for query endpoint."""
+"""查询端点的 Pydantic schema。"""
 
 from pydantic import BaseModel, Field
 
@@ -21,12 +21,13 @@ class MessageSchema(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str
+    profile: str | None = None
     top_k: int = Field(default=5, ge=1, le=50)
     filters: dict | None = None
     stream: bool = False
     max_iterations: int = Field(default=10, ge=1, le=30)
     history: list[MessageSchema] | None = None
-    trace_id: str | None = None  # allow client to pass its own trace-id
+    trace_id: str | None = None  # 允许客户端传入自己的 trace-id
 
 
 class QueryResponse(BaseModel):

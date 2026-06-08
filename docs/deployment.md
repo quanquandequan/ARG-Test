@@ -20,6 +20,15 @@ curl -X POST http://localhost:8000/query \
   -d '{"query": "你的问题"}'
 ```
 
+Note:
+- Development defaults to `Milvus Lite` via `./data/milvus_lite/milvus.db`.
+- The local KB needs the `milvus_lite` runtime, which is installed by `pymilvus[milvus_lite]`.
+- If you see a Milvus Lite connection error, rerun:
+
+```bash
+pip install -e ".[dev]"
+```
+
 ## Docker Compose (Production)
 
 ```bash

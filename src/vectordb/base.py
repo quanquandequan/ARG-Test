@@ -1,4 +1,4 @@
-"""Abstract base class for vector database."""
+"""向量数据库抽象基类。"""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -20,8 +20,8 @@ class BaseVectorDB(ABC):
 
     @abstractmethod
     def insert(self, chunks_with_vectors: list[tuple]) -> None:
-        """Insert chunks with their embeddings.
-        Each item: (chunk_id, document_id, content, chunk_index, embedding, metadata)
+        """插入 chunks 及其 embeddings。
+        每项格式：(chunk_id, document_id, content, chunk_index, embedding, metadata)
         """
         ...
 
@@ -36,7 +36,7 @@ class BaseVectorDB(ABC):
 
     @abstractmethod
     def delete_by_document_id(self, document_id: str) -> int:
-        """Delete all chunks belonging to a document. Returns count deleted."""
+        """删除属于指定文档的所有 chunks，并返回删除数量。"""
         ...
 
     @abstractmethod

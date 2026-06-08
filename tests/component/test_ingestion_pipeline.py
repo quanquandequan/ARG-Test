@@ -1,4 +1,4 @@
-"""Component test for the load → clean → chunk pipeline."""
+"""load → clean → chunk 流程的组件测试。"""
 
 from pathlib import Path
 
@@ -21,7 +21,7 @@ def test_ingest_markdown_produces_chunks(tmp_path: Path):
     pipeline = IngestionPipeline()
     doc, chunks = pipeline.ingest(path)
 
-    assert doc.content  # cleaned content
+    assert doc.content  # 已清洗内容
     assert len(chunks) >= 1
     assert all(c.document_id == doc.id for c in chunks)
     assert all(c.content.strip() for c in chunks)
@@ -50,3 +50,19 @@ def test_ingest_missing_file_raises(tmp_path: Path):
     pipeline = IngestionPipeline()
     with pytest.raises(IngestionError):
         pipeline.ingest(tmp_path / "does_not_exist.md")
+
+
+def test_ingest_and_store_persists_document_metadata(fake_embedder, fake_vectordb, tmp_path: Path):
+    path = _write(tmp_path, "cases.md", "# 标题\n\n测试内容。")
+    pipeline = IngestionPipeline(
+        embedder=fake_embedder,
+        vectordb=fake_vectordb,
+    )
+
+    result = pipeline.ingest_and_store(path)
+
+    assert result.chunks
+    rows = list(fake_vectordb._store.values())
+    assert rows[0]["metadata"]["source_name"] == "cases.md"
+    assert rows[0]["metadata"]["source_ext"] == ".md"
+    assert rows[0]["metadata"]["source_format"] == "md"

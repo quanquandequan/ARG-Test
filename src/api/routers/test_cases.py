@@ -1,4 +1,4 @@
-"""Test case generation endpoint — upload a requirements doc, get an Excel file."""
+"""测试用例生成端点：上传需求文档并获取 Excel 文件。"""
 
 from pathlib import Path
 
@@ -16,7 +16,9 @@ _SUPPORTED_SUFFIXES = {".txt", ".md", ".pdf", ".xlsx", ".xlsm", ".xmind"}
 
 class GenerateTestCasesResponse(BaseModel):
     file_path: str
+    automation_json_path: str = ""
     module: str
+    generation_mode: str
     summary: str
 
 
@@ -24,9 +26,16 @@ class GenerateTestCasesResponse(BaseModel):
 async def generate_test_cases(
     file: UploadFile = File(..., description="需求文档（支持 .txt/.md/.pdf/.xlsx/.xmind）"),
     module: str = Form("", description="功能模块名称（可选，影响文件命名和用例分组）"),
-    output_dir: str = Form("", description="输出目录（当前保留字段，默认由 ArtifactRepository 管理）"),
+    generation_mode: str = Form(
+        "manual",
+        description="生成模式：manual=人工测试用例，automation=移动端UI自动化用例",
+    ),
+    output_dir: str = Form(
+        "",
+        description="输出目录（当前保留字段，默认由 ArtifactRepository 管理）",
+    ),
 ):
-    """Upload a requirements document and generate test cases as an Excel file."""
+    """上传需求文档并生成 Excel 测试用例文件。"""
     suffix = Path(file.filename or "upload").suffix.lower()
     if suffix not in _SUPPORTED_SUFFIXES:
         raise HTTPException(
@@ -47,17 +56,25 @@ async def generate_test_cases(
             filename=file.filename or "upload",
             content=content,
             module=module,
+            generation_mode=generation_mode,
         )
         logger.info(
             "test_cases_generated",
             filename=file.filename,
             module=result.generation.module,
             file_path=str(result.workbook_artifact.path),
+            generation_mode=result.generation.generation_mode,
             requested_output_dir=output_dir or None,
         )
         return GenerateTestCasesResponse(
             file_path=str(result.workbook_artifact.path),
+            automation_json_path=(
+                str(result.automation_json_artifact.path)
+                if result.automation_json_artifact
+                else ""
+            ),
             module=result.generation.module,
+            generation_mode=result.generation.generation_mode,
             summary=(
                 f"已生成测试用例，共 {result.generation.case_count} 条，"
                 f"artifact_id={result.workbook_artifact.artifact_id}"

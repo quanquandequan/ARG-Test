@@ -1,2 +1,1 @@
-"""Application-layer services and repositories."""
-
+"""应用层服务与仓储。"""

@@ -1,4 +1,4 @@
-"""Component test for DenseRetriever with the in-memory FakeVectorDB."""
+"""DenseRetriever 与内存 FakeVectorDB 的组件测试。"""
 
 from src.retriever.dense_retriever import DenseRetriever
 
@@ -55,7 +55,7 @@ def test_similarity_threshold_filters_low_scores(fake_embedder, fake_vectordb):
         fake_embedder, fake_vectordb, top_k=10, similarity_threshold=0.99
     )
     hits = retriever.retrieve("同一个查询字符串")
-    # Only the (near-)exact match survives the very strict threshold
+    # 只有（近似）精确匹配能通过非常严格的阈值
     assert all(h.score >= 0.99 for h in hits)
     assert any(h.document_id == "d1" for h in hits)
 
@@ -70,4 +70,28 @@ def test_threshold_zero_keeps_everything(fake_embedder, fake_vectordb):
         fake_embedder, fake_vectordb, top_k=10, similarity_threshold=0.0
     )
     hits = retriever.retrieve("Z")
+    assert len(hits) == 2
+
+
+def test_threshold_keeps_candidates_when_all_would_be_dropped(
+    fake_embedder,
+    fake_vectordb,
+):
+    _seed(
+        fake_embedder,
+        fake_vectordb,
+        [
+            ("c1", "d1", "叭嗒漫画 阅读器 功能介绍", 0),
+            ("c2", "d2", "叭嗒漫画 阅读设置 离线下载", 0),
+        ],
+    )
+    retriever = DenseRetriever(
+        fake_embedder,
+        fake_vectordb,
+        top_k=10,
+        similarity_threshold=1.01,
+    )
+
+    hits = retriever.retrieve("叭嗒漫画阅读器都有哪些功能")
+
     assert len(hits) == 2

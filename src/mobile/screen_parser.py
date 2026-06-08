@@ -1,6 +1,6 @@
-"""Parse Appium page_source XML into a structured element list.
+"""将 Appium page_source XML 解析为结构化元素列表。
 
-Appium Android (UIAutomator2) returns XML like:
+Appium Android（UIAutomator2）返回的 XML 类似：
   <hierarchy>
     <android.widget.FrameLayout bounds="[0,0][1080,2340]">
       <android.widget.Button text="登录" resource-id="com.pkg:id/login_btn"
@@ -8,9 +8,9 @@ Appium Android (UIAutomator2) returns XML like:
     </android.widget.FrameLayout>
   </hierarchy>
 
-We extract only the elements useful to a test agent:
-  - Has text, content-desc, or a known resource-id
-  - Visible (bounds not collapsed to a zero-area rect)
+这里只提取对测试 Agent 有用的元素：
+  - 包含 text、content-desc 或已知 resource-id
+  - 可见（bounds 未折叠为零面积矩形）
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class UIElement:
-    """A single UI element extracted from the page source."""
+    """从页面源码中提取的单个 UI 元素。"""
 
     text: str
     resource_id: str
@@ -43,14 +43,14 @@ class UIElement:
 
     @property
     def is_visible(self) -> bool:
-        """Element with zero-area bounds is not rendered."""
+        """零面积 bounds 的元素不会被渲染。"""
         w = self.bounds[2] - self.bounds[0]
         h = self.bounds[3] - self.bounds[1]
         return w > 0 and h > 0
 
     @property
     def label(self) -> str:
-        """Best human-readable label for this element."""
+        """该元素最适合人类阅读的标签。"""
         return self.text or self.content_desc or self.resource_id.split("/")[-1]
 
     def to_dict(self) -> dict:
@@ -68,7 +68,7 @@ class UIElement:
 
 @dataclass
 class ParsedScreen:
-    """The full parsed page."""
+    """完整的页面解析结果。"""
 
     elements: list[UIElement] = field(default_factory=list)
     raw_xml: str = ""
@@ -93,7 +93,7 @@ class ParsedScreen:
         return None
 
     def to_agent_summary(self) -> dict:
-        """Compact representation for Agent consumption."""
+        """供 Agent 消费的紧凑表示。"""
         visible = [e for e in self.elements if e.is_visible]
         return {
             "element_count": len(visible),
@@ -102,15 +102,15 @@ class ParsedScreen:
         }
 
     def has_meaningful_content(self, min_text_elements: int = 1) -> bool:
-        """True if the XML tree is rich enough to skip VLM fallback.
+        """当 XML 树信息足够丰富、可跳过 VLM 兜底时返回 True。
 
-        XML is considered sufficient when EITHER condition holds:
-          - There is at least one clickable element (we can locate
-            buttons / inputs for action_tool even without text), OR
-          - The number of visible elements that carry text or content_desc
-            reaches ``min_text_elements``.
+        满足以下任一条件即认为 XML 足够：
+          - 至少存在一个可点击元素（即使没有文本，action_tool 也能定位
+            按钮 / 输入框），或
+          - 携带 text 或 content_desc 的可见元素数量达到
+            ``min_text_elements``。
 
-        Set ``min_text_elements=0`` to always trust XML (VLM never auto-fires).
+        设置 ``min_text_elements=0`` 表示始终信任 XML（不自动触发 VLM）。
         """
         visible = [e for e in self.elements if e.is_visible]
         has_clickable = any(e.clickable for e in visible)
@@ -121,13 +121,13 @@ class ParsedScreen:
 
 
 def parse_page_source(xml_str: str) -> ParsedScreen:
-    """Parse Appium page_source XML into a ParsedScreen.
+    """将 Appium page_source XML 解析为 ParsedScreen。
 
     Args:
-        xml_str: Raw XML string from driver.page_source.
+        xml_str: 来自 driver.page_source 的原始 XML 字符串。
 
     Returns:
-        ParsedScreen containing all extracted UIElements.
+        包含所有已提取 UIElement 的 ParsedScreen。
     """
     if not xml_str or not xml_str.strip():
         return ParsedScreen(raw_xml=xml_str)
@@ -144,10 +144,10 @@ def parse_page_source(xml_str: str) -> ParsedScreen:
 
 
 def compute_structure_hash(xml_str: str) -> str:
-    """Compute a stable hash from XML structure (ignores dynamic text content).
+    """根据 XML 结构计算稳定哈希（忽略动态文本内容）。
 
-    Uses element tag names and resource IDs, not text content, so that a
-    page with updated text (e.g. a counter) still hits the same cache entry.
+    使用元素标签名和 resource-id，而不是文本内容，因此文本更新
+    （例如计数器变化）后的页面仍可命中同一个缓存条目。
     """
     import hashlib
 
@@ -166,10 +166,10 @@ def compute_structure_hash(xml_str: str) -> str:
         return ""
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+# ── 内部辅助方法 ─────────────────────────────────────────────────────────────
 
 def _walk(node: ET.Element, out: list[UIElement]) -> None:
-    """Recursively extract UIElements from the XML tree."""
+    """从 XML 树中递归提取 UIElement。"""
     el = _extract_element(node)
     if el is not None:
         out.append(el)
@@ -178,13 +178,13 @@ def _walk(node: ET.Element, out: list[UIElement]) -> None:
 
 
 def _extract_element(node: ET.Element) -> UIElement | None:
-    """Extract a UIElement from a single XML node; return None if not useful."""
+    """从单个 XML 节点提取 UIElement；无可用信息时返回 None。"""
     text = (node.get("text") or "").strip()
     content_desc = (node.get("content-desc") or "").strip()
     resource_id = node.get("resource-id", "")
-    class_name = node.tag  # in UIAutomator2 the tag IS the class name
+    class_name = node.tag  # 在 UIAutomator2 中，标签名就是 class name
 
-    # Skip nodes with no identifying information
+    # 跳过没有识别信息的节点
     if not text and not content_desc and not resource_id:
         return None
 
@@ -206,6 +206,6 @@ def _extract_element(node: ET.Element) -> UIElement | None:
 
 
 def _parse_bounds(bounds_str: str) -> list[int]:
-    """Parse "[x1,y1][x2,y2]" → [x1, y1, x2, y2]."""
+    """解析 "[x1,y1][x2,y2]" 为 [x1, y1, x2, y2]。"""
     nums = re.findall(r"\d+", bounds_str)
     return [int(n) for n in nums] if len(nums) == 4 else [0, 0, 0, 0]

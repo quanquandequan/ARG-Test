@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Retrieval quality evaluation script.
+"""检索质量评估脚本。
 
-Computes MRR, NDCG@K, Recall@K, Precision@K against a labeled test set.
+基于带标签测试集计算 MRR、NDCG@K、Recall@K、Precision@K。
 
-Test set format (JSONL):
+测试集格式（JSONL）：
     {"query": "什么是RAG？", "relevant_docs": ["doc_id_1", "doc_id_2"]}
     {"query": "如何使用Milvus？", "relevant_docs": ["doc_id_3"]}
 
-Usage:
+用法：
     python scripts/eval_retrieval.py --test-set ./data/test_queries.jsonl --k 5
 """
 

@@ -1,4 +1,4 @@
-"""Dense vector retriever — embed query -> search Milvus."""
+"""稠密向量检索器：embed query -> search Milvus。"""
 
 from src.core.logging import get_logger
 from src.embedding.base import BaseEmbedder
@@ -40,5 +40,13 @@ class DenseRetriever:
                     kept=len(kept),
                     dropped=dropped,
                 )
-            results = kept
+            if kept or not results:
+                results = kept
+            else:
+                logger.warning(
+                    "retrieval_threshold_all_dropped_keep_original",
+                    threshold=self._threshold,
+                    candidates=len(results),
+                    max_score=max((r.score for r in results), default=0.0),
+                )
         return results

@@ -1,4 +1,4 @@
-"""Claude API provider via Anthropic SDK."""
+"""通过 Anthropic SDK 使用 Claude API 的 provider。"""
 
 import os
 from typing import AsyncIterator
@@ -29,10 +29,10 @@ class ClaudeProvider(BaseLLM):
             self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
         return self._client
 
-    # -- Message / tool format conversion --
+    # -- 消息 / 工具格式转换 --
 
     def _messages_to_anthropic(self, messages: list[Message]) -> list[dict]:
-        """Convert internal Message list to Anthropic API format."""
+        """将内部 Message 列表转换为 Anthropic API 格式。"""
         converted: list[dict] = []
         for msg in messages:
             if msg.role == "system":
@@ -112,7 +112,7 @@ class ClaudeProvider(BaseLLM):
             },
         )
 
-    # -- Shared request preparation --
+    # -- 共享请求准备 --
 
     def _build_request_kwargs(
         self,
@@ -122,7 +122,7 @@ class ClaudeProvider(BaseLLM):
         temperature: float | None,
         max_tokens: int | None,
     ) -> dict:
-        """Build the kwargs dict for client.messages.create()."""
+        """构建传给 client.messages.create() 的 kwargs 字典。"""
         cfg = get_config().get("llm", {})
         temperature = temperature if temperature is not None else cfg.get("temperature", 0.3)
         max_tokens = max_tokens or cfg.get("max_tokens", 4096)
@@ -155,7 +155,7 @@ class ClaudeProvider(BaseLLM):
 
         return kwargs
 
-    # -- Agent interface --
+    # -- Agent 接口 --
 
     async def generate_chat(
         self,

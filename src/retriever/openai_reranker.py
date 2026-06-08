@@ -1,4 +1,4 @@
-"""OpenAI-based reranker — uses a chat model to score relevance of each passage."""
+"""基于 OpenAI 的 reranker：使用 chat model 为每段文本相关性打分。"""
 
 import json
 import os
@@ -24,9 +24,9 @@ JSON:"""
 
 
 class OpenAIReranker(BaseReranker):
-    """Reranker via OpenAI chat API. Uses a cheap model (gpt-4o-mini) for scoring.
+    """通过 OpenAI chat API 实现的 reranker，使用低成本模型（gpt-4o-mini）打分。
 
-    All candidates are scored in a single API call for efficiency.
+    为提高效率，所有候选项会在单次 API 调用中完成打分。
     """
 
     def __init__(
@@ -88,12 +88,12 @@ class OpenAIReranker(BaseReranker):
         return ranked[:top_k]
 
     def _parse_scores(self, raw: str, expected: int) -> list[float]:
-        # Try to extract JSON from the response
+        # 尝试从响应中提取 JSON
         try:
             data = json.loads(raw)
             scores = data.get("scores", [])
         except json.JSONDecodeError:
-            # Try to find a JSON-like array
+            # 尝试查找类似 JSON 的数组
             match = re.search(r"\[[\d,\s]+\]", raw)
             if match:
                 try:
@@ -110,7 +110,7 @@ class OpenAIReranker(BaseReranker):
                 got=len(scores),
                 raw=raw[:200],
             )
-            # Fallback: return neutral scores
+            # 兜底返回中性分数
             return [50.0] * expected
 
         return [float(s) for s in scores]

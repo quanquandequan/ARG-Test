@@ -1,4 +1,4 @@
-"""Unit tests for screen_parser — no Appium required."""
+"""screen_parser 单元测试，无需 Appium。"""
 
 
 from src.mobile.screen_parser import (
@@ -130,7 +130,7 @@ def test_missing_element_returns_none():
 
 def test_bounds_parsed_correctly():
     screen = parse_page_source(LOGIN_XML)
-    # Use exact match to avoid matching "欢迎登录" with fuzzy "登录"
+    # 使用精确匹配，避免用模糊 "登录" 匹配到 "欢迎登录"
     btn = screen.find_by_text("登录", exact=True)
     assert btn is not None
     assert btn.bounds == [200, 560, 880, 630]
@@ -188,8 +188,8 @@ def test_empty_xml_returns_empty_screen():
 
 def test_sparse_xml_no_text_elements():
     screen = parse_page_source(SPARSE_XML)
-    # The sparse XML only has nodes with resource-id but no text/content-desc
-    # The root FrameLayout has no identifying info, but the View has a resource-id
+    # 稀疏 XML 只有带 resource-id 的节点，没有 text/content-desc
+    # 根 FrameLayout 没有识别信息，但 View 有 resource-id
     assert isinstance(screen, ParsedScreen)
 
 
@@ -200,19 +200,19 @@ def test_malformed_xml_returns_empty():
 
 def test_has_meaningful_content_true():
     screen = parse_page_source(LOGIN_XML)
-    # Login page has clickable elements → always sufficient regardless of text threshold
+    # 登录页存在可点击元素，因此无论文本阈值如何都足够
     assert screen.has_meaningful_content(min_text_elements=3)
 
 
 def test_has_meaningful_content_via_clickable():
-    """Clickable elements alone make XML sufficient (no text required)."""
+    """仅有可点击元素也能让 XML 足够（不需要文本）。"""
     screen = parse_page_source(LOGIN_XML)
     assert screen.has_meaningful_content(min_text_elements=999)
 
 
 def test_has_meaningful_content_false():
     screen = parse_page_source(SPARSE_XML)
-    # SPARSE_XML has only a View with resource-id — no clickable, no text → fails
+    # SPARSE_XML 只有带 resource-id 的 View：无可点击、无文本，因此失败
     assert not screen.has_meaningful_content(min_text_elements=3)
 
 
@@ -222,8 +222,8 @@ def test_to_agent_summary_structure():
     assert "element_count" in summary
     assert "clickable_count" in summary
     assert "elements" in summary
-    assert summary["element_count"] == 6  # incl. FrameLayout with resource-id
-    assert summary["clickable_count"] == 4  # username, password, login_btn, forgot
+    assert summary["element_count"] == 6  # 包含带 resource-id 的 FrameLayout
+    assert summary["clickable_count"] == 4  # username、password、login_btn、forgot
 
 
 # ── Tests: compute_structure_hash ─────────────────────────────────────────────
@@ -232,7 +232,7 @@ def test_same_xml_produces_same_hash():
     h1 = compute_structure_hash(LOGIN_XML)
     h2 = compute_structure_hash(LOGIN_XML)
     assert h1 == h2
-    assert len(h1) == 32  # MD5 hex
+    assert len(h1) == 32  # MD5 十六进制
 
 
 def test_different_xml_produces_different_hash():
@@ -243,7 +243,7 @@ def test_different_xml_produces_different_hash():
 
 def test_structural_hash_ignores_text_changes():
     xml_v1 = LOGIN_XML
-    xml_v2 = LOGIN_XML.replace("欢迎登录", "欢迎回来")  # text changed, structure same
+    xml_v2 = LOGIN_XML.replace("欢迎登录", "欢迎回来")  # 文本变化，结构相同
     assert compute_structure_hash(xml_v1) == compute_structure_hash(xml_v2)
 
 

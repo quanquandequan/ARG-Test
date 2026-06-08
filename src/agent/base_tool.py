@@ -1,21 +1,25 @@
-"""Abstract base class for tools callable by the Agent."""
+"""Agent 可调用工具的抽象基类。"""
 
 from abc import ABC, abstractmethod
 
 from src.agent.tool_result import ToolExecutionResult
 
+FINAL_ANSWER_LLM = "llm_summarize"
+FINAL_ANSWER_PASSTHROUGH = "passthrough_final_answer"
+
 
 class BaseTool(ABC):
-    """A tool that the Agent can invoke via function calling.
+    """Agent 可通过 function calling 调用的工具。
 
-    Subclasses must implement ``name``, ``description``, ``parameters``,
-    and ``execute``.  The ``description`` and ``name`` exposed to the LLM
-    can be overridden at runtime (e.g. from YAML config) without modifying
-    the tool source code — call ``override_description()`` after construction.
+    子类必须实现 ``name``、``description``、``parameters`` 和 ``execute``。
+    暴露给 LLM 的 ``description`` 与 ``name`` 可在运行时覆盖
+    （例如来自 YAML 配置），无需修改工具源码；构造后调用
+    ``override_description()`` 即可。
     """
 
-    # Runtime overrides — set by tool_factory when YAML config provides them.
+    # 运行时覆盖项：当 YAML 配置提供该值时由 tool_factory 设置。
     _description_override: str | None = None
+    final_answer_mode: str = FINAL_ANSWER_LLM
 
     @property
     @abstractmethod
@@ -25,42 +29,42 @@ class BaseTool(ABC):
     @property
     @abstractmethod
     def description(self) -> str:
-        """Default description shown to the LLM.
+        """展示给 LLM 的默认描述。
 
-        Override at runtime via ``override_description(text)`` to use a
-        YAML-configured value instead of the hardcoded default.
+        可通过 ``override_description(text)`` 在运行时覆盖，
+        使用 YAML 配置值替代硬编码默认值。
         """
 
     @property
     @abstractmethod
     def parameters(self) -> dict:
-        """JSON Schema for the tool's parameters."""
+        """工具参数的 JSON Schema。"""
 
     @abstractmethod
     async def execute(self, **kwargs) -> str:
-        """Execute the tool and return a string result."""
+        """执行工具并返回字符串结果。"""
         ...
 
     async def execute_typed(self, **kwargs) -> ToolExecutionResult:
-        """Structured execution hook used by application services."""
+        """应用服务使用的结构化执行钩子。"""
         return ToolExecutionResult(content=await self.execute(**kwargs))
 
-    # ── Runtime override helpers ──────────────────────────────────────────
+    # ── 运行时覆盖辅助方法 ───────────────────────────────────────────────
 
     def override_description(self, text: str) -> None:
-        """Replace the default description with a YAML-configured value.
+        """用 YAML 配置值替换默认描述。
 
-        The overridden text is what the LLM receives in ``to_tool_schema()``,
-        allowing prompt tuning without touching Python source.
+        LLM 会在 ``to_tool_schema()`` 中收到覆盖后的文本，
+        因而可在不修改 Python 源码的情况下调优提示词。
         """
         self._description_override = text.strip() or None
 
     def effective_description(self) -> str:
-        """Return the description the LLM will see (override preferred)."""
+        """返回 LLM 将看到的描述（优先使用覆盖值）。"""
         return self._description_override or self.description
 
     def to_tool_schema(self) -> dict:
-        """Return the tool definition as a function-calling schema."""
+        """以 function-calling schema 形式返回工具定义。"""
         return {
             "name": self.name,
             "description": self.effective_description(),

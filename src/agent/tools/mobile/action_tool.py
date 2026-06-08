@@ -1,17 +1,16 @@
-"""ActionTool — execute UI gestures on the Android device.
+"""ActionTool：在 Android 设备上执行 UI 手势。
 
-After every successful action, the PageCache is invalidated so the next
-screen read reflects the updated state.
+每次操作成功后都会使 PageCache 失效，确保下一次屏幕读取反映最新状态。
 
-Supported actions:
-  tap           Tap an element by text, resource-id, or coordinates
-  long_press    Long-press an element (by text / id / coords)
-  input_text    Type text into the currently focused field
-  clear_text    Clear the focused text field
-  swipe         Directional swipe (up/down/left/right) or custom coords
-  scroll        Scroll in a direction (convenience wrapper around swipe)
-  back          Press the Android Back button
-  home          Press the Android Home button
+支持的操作：
+  tap           按文本、resource-id 或坐标点击元素
+  long_press    按文本、id 或坐标长按元素
+  input_text    向当前聚焦字段输入文本
+  clear_text    清空当前聚焦文本框
+  swipe         按方向滑动（上/下/左/右）或自定义坐标
+  scroll        按方向滚动（swipe 的便捷封装）
+  back          按 Android 返回键
+  home          按 Android Home 键
 """
 
 from __future__ import annotations
@@ -23,11 +22,11 @@ from src.services.page_cache import PageCache
 
 logger = get_logger(__name__)
 
-# Default screen resolution assumptions for relative swipes
+# 相对滑动使用的默认屏幕分辨率假设
 _DEFAULT_WIDTH = 1080
 _DEFAULT_HEIGHT = 2340
-_SWIPE_MARGIN = 0.15   # stay 15% from edges to avoid triggering gestures
-_SCROLL_DISTANCE = 0.4  # scroll 40% of screen height
+_SWIPE_MARGIN = 0.15   # 距离边缘保留 15%，避免触发系统手势
+_SCROLL_DISTANCE = 0.4  # 滚动屏幕高度的 40%
 
 
 class ActionTool(BaseTool):
@@ -85,7 +84,7 @@ class ActionTool(BaseTool):
         self._mgr = driver_manager
         self._cache = page_cache
 
-    # ── Entry point ───────────────────────────────────────────────────────────
+    # ── 入口 ─────────────────────────────────────────────────────────────────
 
     async def execute(self, action: str = "", **kwargs) -> str:  # type: ignore[override]
         if not self._mgr.is_connected():
@@ -113,11 +112,11 @@ class ActionTool(BaseTool):
                 "支持：tap / long_press / input_text / clear_text / swipe / scroll / back / home"
             )
 
-        # Invalidate cache after any successful action
+        # 任意成功操作后使缓存失效
         self._cache.invalidate()
         return result
 
-    # ── Action implementations ────────────────────────────────────────────────
+    # ── 操作实现 ─────────────────────────────────────────────────────────────
 
     async def _resolve_coords(
         self,
@@ -126,14 +125,14 @@ class ActionTool(BaseTool):
         x: float | None = None,
         y: float | None = None,
     ) -> tuple[int, int] | None:
-        """Resolve element coordinates.  Returns None if nothing found."""
+        """解析元素坐标；未找到时返回 None。"""
         if target:
             parsed = await self._mgr.get_parsed_screen()
 
             if target_type == "id":
                 el = parsed.find_by_resource_id(target)
             elif target_type == "desc":
-                # Treat content_desc field
+                # 匹配 content_desc 字段
                 el = next(
                     (e for e in parsed.elements if target in e.content_desc),
                     None,

@@ -1,4 +1,4 @@
-"""Tests for RequirementReviewerTool."""
+"""RequirementReviewerTool 测试。"""
 
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ async def test_result_shows_ambiguities(tool):
 @pytest.mark.asyncio
 async def test_result_shows_quality_gate_hint(tool):
     result = await tool.execute(requirement=_MINIMAL_REQ, module="登录")
-    # Score = 65, below 70 → should warn
+    # 评分 = 65，低于 70，应给出警告
     assert "澄清" in result or "⚠️" in result
 
 
@@ -135,7 +135,7 @@ async def test_ir_file_input(tool, ir_file, tmp_path):
 @pytest.mark.asyncio
 async def test_ir_file_module_extracted_from_ir(tool, ir_file):
     result = await tool.execute(ir_file=ir_file)
-    # Module should come from the IR ("用户登录")
+    # 模块名应来自 IR（"用户登录"）
     assert "用户登录" in result
 
 

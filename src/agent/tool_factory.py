@@ -1,12 +1,12 @@
-"""Build Agent tools from config-driven tool names.
+"""根据配置驱动的工具名称构建 Agent 工具。
 
-Tool configuration supports two formats (both in ``agent.tools`` YAML list):
+工具配置支持两种格式（通常来自某个 profile 的 ``tools`` 列表）：
 
-  # Simple string — uses code defaults for description and prompts
-  - knowledge_search
+  # 简单字符串：使用代码默认的描述与提示词
+  - search_knowledge
 
-  # Object — overrides description and/or tool-internal system_prompt
-  - name: write_test_cases
+  # 对象：覆盖描述和/或工具内部 system_prompt
+  - name: design_test_cases
     description: |
       根据需求文档生成测试用例...（覆盖代码默认值）
     system_prompt: |
@@ -19,7 +19,10 @@ from collections.abc import Callable
 from typing import Any
 
 from src.agent.base_tool import BaseTool
+from src.agent.tools.analyze_requirement import AnalyzeRequirementTool
 from src.agent.tools.analyze_requirements import AnalyzeRequirementsTool
+from src.agent.tools.design_test_cases import DesignTestCasesTool
+from src.agent.tools.execute_scenario import ExecuteScenarioTool
 from src.agent.tools.mobile.action_tool import ActionTool
 from src.agent.tools.mobile.assertion_tool import AssertionTool
 from src.agent.tools.mobile.device_tool import DeviceTool
@@ -27,9 +30,14 @@ from src.agent.tools.mobile.screen_tool import ScreenTool
 from src.agent.tools.requirement_parser import RequirementParserTool
 from src.agent.tools.requirement_reviewer import RequirementReviewerTool
 from src.agent.tools.search_kb import KnowledgeBaseTool
+from src.agent.tools.search_knowledge import SearchKnowledgeTool
 from src.agent.tools.web_search import WebSearchTool
 from src.agent.tools.write_test_cases import WriteTestCasesTool
+from src.application.execution_service import MobileExecutionService
+from src.application.requirement_services import TestCaseGenerationService
 from src.core.logging import get_logger
+from src.ingestion.cleaner import TextCleaner
+from src.ingestion.loader import DocumentLoader
 from src.llm.base import BaseLLM
 from src.mobile.driver import AppiumDriverManager
 from src.retriever.retrieval_engine import RetrievalEngine
@@ -37,11 +45,16 @@ from src.services.page_cache import PageCache
 
 logger = get_logger(__name__)
 
-_DEFAULT_TOOLS = ("knowledge_search", "web_search")
+_DEFAULT_TOOLS = (
+    "search_knowledge",
+    "analyze_requirement",
+    "design_test_cases",
+    "execute_scenario",
+)
 
-# Shared mobile singletons — created lazily the first time a mobile tool is built.
-# All four mobile tools reference the same driver manager and page cache so that
-# DeviceTool.connect() is visible to ScreenTool / ActionTool / AssertionTool.
+# 共享移动端单例：首次构建移动端工具时延迟创建。
+# 四个移动端工具引用同一个 driver manager 和 page cache，
+# 确保 DeviceTool.connect() 对 ScreenTool / ActionTool / AssertionTool 可见。
 _shared_driver_manager: AppiumDriverManager | None = None
 _shared_page_cache: PageCache | None = None
 
@@ -56,14 +69,14 @@ def _get_mobile_singletons() -> tuple[AppiumDriverManager, PageCache]:
 
 
 def _parse_tool_config(entry: Any) -> tuple[str, str | None, str | None]:
-    """Return ``(name, description_override, system_prompt)`` from a config entry.
+    """从配置条目返回 ``(name, description_override, system_prompt)``。
 
-    Accepts either a plain string or a dict/DictConfig with at least a ``name`` key.
+    支持纯字符串，或至少包含 ``name`` 键的 dict/DictConfig。
     """
     if isinstance(entry, str):
         return entry, None, None
 
-    # dict or OmegaConf DictConfig
+    # dict 或 OmegaConf DictConfig
     name = str(entry.get("name", "")).strip()
     description = entry.get("description") or None
     system_prompt = entry.get("system_prompt") or None
@@ -80,22 +93,42 @@ def build_agent_tools(
     retrieval_engine: RetrievalEngine,
     tool_configs: list[Any] | None = None,
     llm: BaseLLM | None = None,
+    test_case_generation_service: TestCaseGenerationService | None = None,
+    mobile_execution_service: MobileExecutionService | None = None,
+    driver_manager: AppiumDriverManager | None = None,
+    page_cache: PageCache | None = None,
+    loader: DocumentLoader | None = None,
+    cleaner: TextCleaner | None = None,
 ) -> list[BaseTool]:
-    """Instantiate tools listed in ``agent.tools`` config (order preserved).
+    """按当前 profile 的 ``tools`` 配置实例化工具（保留顺序）。
 
     Args:
-        retrieval_engine: Used by ``knowledge_search``.
-        tool_configs: Ordered list from config.  Each entry is either a plain
-            string (tool name) or a dict with ``name``, optional
-            ``description``, and optional ``system_prompt`` keys.
-            Defaults to ``_DEFAULT_TOOLS``.
-        llm: Required only for LLM-powered tools (e.g. ``write_test_cases``).
-             If *None* and such a tool is requested, it is skipped with a warning.
+        retrieval_engine: 供知识检索类工具使用。
+        tool_configs: 来自配置的有序列表。每个条目可以是纯字符串（工具名），
+            也可以是包含 ``name``、可选 ``description`` 和可选
+            ``system_prompt`` 的 dict。默认使用 ``_DEFAULT_TOOLS``。
+        llm: 仅 LLM 驱动工具需要（例如 ``analyze_requirement``）。
+             如果为 *None* 且请求了这类工具，则记录警告并跳过。
+        test_case_generation_service: 测试用例生成能力使用的业务门面。
+        mobile_execution_service: 自动化执行能力使用的业务门面。
+        driver_manager: 可选移动端运行时实例，供低阶工具与执行工作流共享。
+        page_cache: 可选页面缓存实例，供低阶工具与执行工作流共享。
+        loader: 可选文档加载器，供需求分析门面读取本地需求文件。
+        cleaner: 可选文本清洗器，供需求分析门面清洗需求文件内容。
     """
     configs = tool_configs or list(_DEFAULT_TOOLS)
 
+    def _get_mobile_runtime() -> tuple[AppiumDriverManager, PageCache]:
+        if driver_manager is not None and page_cache is not None:
+            return driver_manager, page_cache
+        shared_driver_mgr, shared_page_cache = _get_mobile_singletons()
+        return (
+            driver_manager if driver_manager is not None else shared_driver_mgr,
+            page_cache if page_cache is not None else shared_page_cache,
+        )
+
     def _build_qwen_vlm():
-        """Return a QwenVisionProvider if configured, else None."""
+        """若已配置则返回 QwenVisionProvider，否则返回 None。"""
         try:
             from src.llm.qwen_vision_provider import QwenVisionProvider
 
@@ -113,9 +146,12 @@ def build_agent_tools(
             logger.warning("llm_required_for_tool_skipped", tool=tool_name)
         return llm
 
-    # Factories receive (description_override, system_prompt) as context
+    # 工厂函数接收 (description_override, system_prompt) 作为上下文
     def _make_knowledge_search(_desc: str | None, _sp: str | None) -> BaseTool:
         return KnowledgeBaseTool(retrieval_engine)
+
+    def _make_search_knowledge(_desc: str | None, _sp: str | None) -> BaseTool:
+        return SearchKnowledgeTool(retrieval_engine)
 
     def _make_web_search(_desc: str | None, _sp: str | None) -> BaseTool:
         return WebSearchTool()
@@ -123,10 +159,24 @@ def build_agent_tools(
     def _make_write_test_cases(
         _desc: str | None, sys_prompt: str | None
     ) -> BaseTool | None:
-        _llm = _require_llm("write_test_cases")
-        if _llm is None:
+        if test_case_generation_service is None:
+            logger.warning("service_required_for_tool_skipped", tool="write_test_cases")
             return None
-        return WriteTestCasesTool(_llm, system_prompt=sys_prompt or None)
+        return WriteTestCasesTool(
+            test_case_generation_service,
+            system_prompt=sys_prompt or None,
+        )
+
+    def _make_design_test_cases(
+        _desc: str | None, sys_prompt: str | None
+    ) -> BaseTool | None:
+        if test_case_generation_service is None:
+            logger.warning("service_required_for_tool_skipped", tool="design_test_cases")
+            return None
+        return DesignTestCasesTool(
+            test_case_generation_service,
+            system_prompt=sys_prompt or None,
+        )
 
     def _make_analyze_requirements(
         _desc: str | None, sys_prompt: str | None
@@ -135,6 +185,25 @@ def build_agent_tools(
         if _llm is None:
             return None
         return AnalyzeRequirementsTool(_llm, system_prompt=sys_prompt or None)
+
+    def _make_analyze_requirement(
+        _desc: str | None, sys_prompt: str | None
+    ) -> BaseTool | None:
+        if sys_prompt:
+            raise ValueError(
+                "analyze_requirement 是复合门面工具，不支持 system_prompt 覆盖；"
+                "请配置 requirement_parser / requirement_reviewer / "
+                "analyze_requirements 等内部工具的提示词。"
+            )
+        _llm = _require_llm("analyze_requirement")
+        if _llm is None:
+            return None
+        return AnalyzeRequirementTool(
+            llm=_llm,
+            retrieval_engine=retrieval_engine,
+            loader=loader,
+            cleaner=cleaner,
+        )
 
     def _make_requirement_parser(
         _desc: str | None, sys_prompt: str | None
@@ -153,33 +222,43 @@ def build_agent_tools(
         return RequirementReviewerTool(_llm, system_prompt=sys_prompt or None)
 
     def _make_device_tool(_desc: str | None, _sp: str | None) -> BaseTool:
-        driver_mgr, _ = _get_mobile_singletons()
+        driver_mgr, _ = _get_mobile_runtime()
         return DeviceTool(driver_manager=driver_mgr)
 
     def _make_screen_tool(_desc: str | None, _sp: str | None) -> BaseTool:
-        driver_mgr, page_cache = _get_mobile_singletons()
+        driver_mgr, page_cache = _get_mobile_runtime()
         vlm = _build_qwen_vlm()
         return ScreenTool(driver_manager=driver_mgr, page_cache=page_cache, vlm=vlm)
 
     def _make_action_tool(_desc: str | None, _sp: str | None) -> BaseTool:
-        driver_mgr, page_cache = _get_mobile_singletons()
+        driver_mgr, page_cache = _get_mobile_runtime()
         return ActionTool(driver_manager=driver_mgr, page_cache=page_cache)
 
     def _make_assertion_tool(_desc: str | None, _sp: str | None) -> BaseTool:
-        driver_mgr, _ = _get_mobile_singletons()
+        driver_mgr, _ = _get_mobile_runtime()
         return AssertionTool(driver_manager=driver_mgr)
+
+    def _make_execute_scenario(_desc: str | None, _sp: str | None) -> BaseTool | None:
+        if mobile_execution_service is None:
+            logger.warning("service_required_for_tool_skipped", tool="execute_scenario")
+            return None
+        return ExecuteScenarioTool(service=mobile_execution_service)
 
     factories: dict[str, Callable[[str | None, str | None], BaseTool | None]] = {
         "knowledge_search": _make_knowledge_search,
+        "search_knowledge": _make_search_knowledge,
         "web_search": _make_web_search,
         "write_test_cases": _make_write_test_cases,
+        "design_test_cases": _make_design_test_cases,
         "analyze_requirements": _make_analyze_requirements,
+        "analyze_requirement": _make_analyze_requirement,
         "requirement_parser": _make_requirement_parser,
         "requirement_reviewer": _make_requirement_reviewer,
         "device_tool": _make_device_tool,
         "screen_tool": _make_screen_tool,
         "action_tool": _make_action_tool,
         "assertion_tool": _make_assertion_tool,
+        "execute_scenario": _make_execute_scenario,
     }
 
     tools: list[BaseTool] = []
@@ -198,7 +277,7 @@ def build_agent_tools(
         if tool is None:
             continue
 
-        # Apply YAML-level description override (affects what the LLM sees)
+        # 应用 YAML 级描述覆盖（影响 LLM 看到的内容）
         if description:
             tool.override_description(description)
 

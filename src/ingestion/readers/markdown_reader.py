@@ -1,4 +1,4 @@
-"""Markdown document reader with section extraction."""
+"""支持章节抽取的 Markdown 文档 reader。"""
 
 import re
 import uuid
@@ -23,7 +23,7 @@ class MarkdownReader(BaseReader):
             "sections": [s["title"] for s in sections if s["title"]],
         }
 
-        # Try to extract YAML frontmatter
+        # 尝试抽取 YAML frontmatter
         content = raw
         fm_match = re.match(r"^---\n(.*?)\n---\n", raw, re.DOTALL)
         if fm_match:
@@ -38,7 +38,7 @@ class MarkdownReader(BaseReader):
         )
 
     def _extract_sections(self, text: str) -> list[dict]:
-        """Extract heading hierarchy from markdown."""
+        """从 markdown 中抽取标题层级。"""
         sections: list[dict] = []
         for line in text.splitlines():
             m = re.match(r"^(#{1,6})\s+(.*)", line)

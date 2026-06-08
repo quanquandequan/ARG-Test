@@ -1,4 +1,4 @@
-"""BGE-M3 embedding model via FlagEmbedding / sentence-transformers."""
+"""通过 FlagEmbedding / sentence-transformers 使用 BGE-M3 embedding 模型。"""
 
 import numpy as np
 
@@ -8,10 +8,9 @@ from src.embedding.base import BaseEmbedder
 
 
 class BgeM3Embedder(BaseEmbedder):
-    """BAAI/bge-m3 embedding model — SOTA for Chinese, 1024-dim, multilingual.
+    """BAAI/bge-m3 embedding 模型，中文效果优秀，1024 维，多语言。
 
-    Supports dense, sparse, and ColBERT representations. We use dense vectors
-    (1024-dim) for the primary retrieval path.
+    支持 dense、sparse 和 ColBERT 表示。主检索链路使用 dense 向量（1024 维）。
     """
 
     def __init__(
@@ -56,7 +55,7 @@ class BgeM3Embedder(BaseEmbedder):
         vectors_list: list[np.ndarray] = []
         for i in range(0, len(texts), self._batch_size):
             batch = texts[i : i + self._batch_size]
-            # BGE-M3 returns a dict with 'dense_vecs', 'lexical_weights', 'colbert_vecs'
+            # BGE-M3 返回包含 'dense_vecs'、'lexical_weights'、'colbert_vecs' 的字典
             output = self._model.encode(batch, batch_size=self._batch_size)
             dense = output["dense_vecs"]
             if self._normalize:

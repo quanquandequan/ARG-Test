@@ -1,4 +1,4 @@
-"""Abstract base class for document format readers."""
+"""文档格式 reader 抽象基类。"""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -7,24 +7,24 @@ from pathlib import Path
 
 @dataclass
 class Document:
-    """Parsed document with extracted text and metadata."""
+    """解析后的文档，包含抽取文本和元数据。"""
 
     id: str
     source_path: str
     content: str
     metadata: dict = field(default_factory=dict)
-    # metadata includes: title, author, page_count, sections, tables, etc.
+    # metadata 包含 title、author、page_count、sections、tables 等。
 
 
 class BaseReader(ABC):
-    """Abstract reader for a specific file format."""
+    """特定文件格式 reader 的抽象类。"""
 
     @abstractmethod
     def read(self, path: Path) -> Document:
-        """Parse a file into a Document. Raises IngestionError on failure."""
+        """将文件解析为 Document；失败时抛出 IngestionError。"""
         ...
 
     @abstractmethod
     def supported_extensions(self) -> list[str]:
-        """Return list of file extensions this reader handles."""
+        """返回该 reader 支持的文件扩展名列表。"""
         ...

@@ -1,9 +1,9 @@
-"""Appium driver manager — wraps the Appium WebDriver session.
+"""Appium driver manager：封装 Appium WebDriver 会话。
 
-All blocking Appium operations run in a thread pool via ``asyncio.to_thread``
-so they don't block the async event loop.
+所有阻塞型 Appium 操作都通过 ``asyncio.to_thread`` 在线程池中执行，
+避免阻塞异步事件循环。
 
-Usage:
+用法：
     mgr = AppiumDriverManager()
     await mgr.connect(server_url="http://localhost:4723", caps={...})
     xml = await mgr.get_page_source()
@@ -11,7 +11,7 @@ Usage:
     await mgr.tap(x=540, y=960)
     await mgr.disconnect()
 
-Install dependency:
+安装依赖：
     pip install appium-python-client Pillow
 """
 
@@ -27,16 +27,16 @@ logger = get_logger(__name__)
 
 
 class AppiumDriverManager:
-    """Manages a single Appium WebDriver session.
+    """管理单个 Appium WebDriver 会话。
 
-    Thread-safe for use in async context: blocking Appium calls are executed
-    via ``asyncio.to_thread``.
+    可在异步上下文中安全使用：阻塞型 Appium 调用通过
+    ``asyncio.to_thread`` 执行。
     """
 
     def __init__(self) -> None:
-        self._driver = None  # appium.webdriver.Remote instance
+        self._driver = None  # appium.webdriver.Remote 实例
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    # ── 生命周期 ─────────────────────────────────────────────────────────────
 
     def is_connected(self) -> bool:
         return self._driver is not None
@@ -46,11 +46,11 @@ class AppiumDriverManager:
         server_url: str,
         caps: dict,
     ) -> None:
-        """Open an Appium session with the given desired capabilities.
+        """使用给定 desired capabilities 打开 Appium 会话。
 
         Args:
-            server_url: Appium server URL, e.g. "http://localhost:4723"
-            caps: Appium desired capabilities dict.
+            server_url: Appium 服务地址，例如 "http://localhost:4723"。
+            caps: Appium desired capabilities 字典。
         """
         if self._driver is not None:
             await self.disconnect()
@@ -73,7 +73,7 @@ class AppiumDriverManager:
         logger.info("appium_connected", server_url=server_url)
 
     async def disconnect(self) -> None:
-        """Quit the current Appium session."""
+        """退出当前 Appium 会话。"""
         if self._driver is None:
             return
         driver = self._driver
@@ -83,7 +83,7 @@ class AppiumDriverManager:
             try:
                 driver.quit()
             except Exception:
-                pass  # already dead
+                pass  # 会话已经失效
 
         await asyncio.to_thread(_quit)
         logger.info("appium_disconnected")
@@ -95,17 +95,17 @@ class AppiumDriverManager:
             )
         return self._driver
 
-    # ── Screen capture ────────────────────────────────────────────────────────
+    # ── 屏幕采集 ─────────────────────────────────────────────────────────────
 
     async def get_page_source(self) -> str:
-        """Return the current XML page source (UIAutomator2 layout hierarchy)."""
+        """返回当前 XML 页面源码（UIAutomator2 布局层级）。"""
         drv = self._require_driver()
         return await asyncio.to_thread(lambda: drv.page_source)
 
     async def get_parsed_screen(self):
-        """Fetch and parse the current screen in one call.
+        """一次调用获取并解析当前屏幕。
 
-        Convenience wrapper around ``get_page_source()`` + ``parse_page_source()``.
+        对 ``get_page_source()`` + ``parse_page_source()`` 的便捷封装。
         """
         from src.mobile.screen_parser import parse_page_source
 
@@ -113,12 +113,12 @@ class AppiumDriverManager:
         return parse_page_source(xml)
 
     async def get_screenshot_base64(self) -> str:
-        """Capture a screenshot and return it as a base64-encoded PNG string."""
+        """截图并返回 base64 编码的 PNG 字符串。"""
         drv = self._require_driver()
         return await asyncio.to_thread(lambda: drv.get_screenshot_as_base64())
 
     async def save_screenshot(self, path: str | Path) -> Path:
-        """Save screenshot to disk and return the absolute path."""
+        """将截图保存到磁盘并返回绝对路径。"""
         b64 = await self.get_screenshot_base64()
         dest = Path(path)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -127,7 +127,7 @@ class AppiumDriverManager:
         return dest.resolve()
 
     async def get_current_activity(self) -> str:
-        """Return the current Android activity name."""
+        """返回当前 Android activity 名称。"""
         drv = self._require_driver()
         try:
             return await asyncio.to_thread(lambda: drv.current_activity or "")
@@ -141,22 +141,21 @@ class AppiumDriverManager:
         except Exception:
             return ""
 
-    # ── App management ────────────────────────────────────────────────────────
+    # ── App 管理 ─────────────────────────────────────────────────────────────
 
     async def launch_app(self, package: str) -> None:
-        """Activate an installed app by package name.
+        """按包名激活已安装应用。
 
-        Uses ``activate_app`` (equivalent to tapping the launcher icon).
-        ``start_activity`` is intentionally avoided — Android rejects
-        explicit-intent launches for non-exported Activities (SecurityException
-        on EMUI and other OEMs).
+        使用 ``activate_app``（等价于点击启动器图标）。
+        这里刻意避免 ``start_activity``，因为 Android 会拒绝对非 exported
+        Activity 的显式 intent 启动（EMUI 和其他 OEM 上会触发 SecurityException）。
         """
         drv = self._require_driver()
         await asyncio.to_thread(lambda: drv.activate_app(package))
         logger.info("app_launched", package=package)
 
     async def install_app(self, apk_path: str) -> None:
-        """Install an APK onto the connected device."""
+        """将 APK 安装到已连接设备。"""
         drv = self._require_driver()
         await asyncio.to_thread(lambda: drv.install_app(apk_path))
         logger.info("app_installed", apk_path=apk_path)
@@ -165,10 +164,10 @@ class AppiumDriverManager:
         drv = self._require_driver()
         await asyncio.to_thread(lambda: drv.terminate_app(package))
 
-    # ── Touch actions ─────────────────────────────────────────────────────────
+    # ── 触控操作 ─────────────────────────────────────────────────────────────
 
     async def tap(self, x: int, y: int) -> None:
-        """Tap at screen coordinates (pixels)."""
+        """按屏幕坐标点击（像素）。"""
         drv = self._require_driver()
         await asyncio.to_thread(lambda: drv.tap([(x, y)]))
         logger.debug("tap", x=x, y=y)
@@ -190,17 +189,17 @@ class AppiumDriverManager:
         end_y: int,
         duration_ms: int = 800,
     ) -> None:
-        """Swipe from (start_x, start_y) to (end_x, end_y)."""
+        """从 (start_x, start_y) 滑动到 (end_x, end_y)。"""
         drv = self._require_driver()
         await asyncio.to_thread(
             lambda: drv.swipe(start_x, start_y, end_x, end_y, duration_ms)
         )
         logger.debug("swipe", start=(start_x, start_y), end=(end_x, end_y))
 
-    # ── Text input ────────────────────────────────────────────────────────────
+    # ── 文本输入 ─────────────────────────────────────────────────────────────
 
     async def input_text(self, text: str) -> None:
-        """Type text into the currently focused element."""
+        """向当前聚焦元素输入文本。"""
         drv = self._require_driver()
         await asyncio.to_thread(lambda: drv.execute_script("mobile: type", {"text": text}))
         logger.debug("input_text", length=len(text))
@@ -209,10 +208,10 @@ class AppiumDriverManager:
         drv = self._require_driver()
         await asyncio.to_thread(lambda: drv.execute_script("mobile: clearTextField"))
 
-    # ── System ────────────────────────────────────────────────────────────────
+    # ── 系统操作 ─────────────────────────────────────────────────────────────
 
     async def press_back(self) -> None:
-        """Press the Android back button."""
+        """按下 Android 返回键。"""
         drv = self._require_driver()
         await asyncio.to_thread(lambda: drv.press_keycode(4))  # 4 = KEYCODE_BACK
         logger.debug("press_back")
@@ -222,7 +221,7 @@ class AppiumDriverManager:
         await asyncio.to_thread(lambda: drv.press_keycode(3))  # 3 = KEYCODE_HOME
 
     async def list_devices(self) -> list[str]:
-        """List connected Android devices via adb (does not require Appium session)."""
+        """通过 adb 列出已连接 Android 设备（无需 Appium 会话）。"""
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -234,22 +233,22 @@ class AppiumDriverManager:
             lines = stdout.decode().strip().splitlines()
             devices = [
                 line.split("\t")[0]
-                for line in lines[1:]      # skip "List of devices attached"
+                for line in lines[1:]      # 跳过 "List of devices attached"
                 if "\tdevice" in line
             ]
             return devices
         except FileNotFoundError:
-            return []  # adb not in PATH
+            return []  # adb 不在 PATH 中
 
 
-# ── Module-level singleton ────────────────────────────────────────────────────
-# All mobile tools share this single manager instance.
+# ── 模块级单例 ───────────────────────────────────────────────────────────────
+# 所有移动端工具共享这个 manager 实例。
 
 _MANAGER: AppiumDriverManager | None = None
 
 
 def get_driver_manager() -> AppiumDriverManager:
-    """Return (or create) the module-level AppiumDriverManager singleton."""
+    """返回（或创建）模块级 AppiumDriverManager 单例。"""
     global _MANAGER
     if _MANAGER is None:
         _MANAGER = AppiumDriverManager()

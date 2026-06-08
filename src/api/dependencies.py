@@ -1,4 +1,4 @@
-"""Compatibility dependency facade backed by the shared application container."""
+"""由共享应用容器支撑的兼容性依赖门面。"""
 
 import sys
 from functools import lru_cache
@@ -42,7 +42,7 @@ def get_retrieval_engine() -> RetrievalEngine:
     return get_container().get_retrieval_engine()
 
 
-def get_agent(profile_name: str = "qa_agent") -> ReActAgent:
+def get_agent(profile_name: str | None = None) -> ReActAgent:
     return get_container().get_agent(profile_name)
 
 
@@ -59,7 +59,7 @@ def get_document_ingestion_service() -> DocumentIngestionService:
 
 
 def clear_all_caches() -> None:
-    """Clear all cached singletons. Call between tests for isolation."""
+    """清理所有缓存单例；测试之间调用以保持隔离。"""
     _this = sys.modules[__name__]
     for name in ("get_container",):
         fn = getattr(_this, name, None)

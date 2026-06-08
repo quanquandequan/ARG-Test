@@ -1,4 +1,4 @@
-"""FastAPI application factory."""
+"""FastAPI 应用工厂。"""
 
 from fastapi import FastAPI
 

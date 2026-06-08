@@ -1,6 +1,6 @@
-"""OpenAI-compatible Embedding API provider.
+"""OpenAI 兼容的 Embedding API provider。
 
-Works with OpenAI, DashScope (千问), and any OpenAI-compatible endpoint.
+可用于 OpenAI、DashScope（千问）以及任意 OpenAI 兼容端点。
 """
 
 import os
@@ -13,7 +13,7 @@ from src.embedding.base import BaseEmbedder
 
 
 class OpenAIEmbedder(BaseEmbedder):
-    """OpenAI-compatible embedding via API.
+    """通过 API 调用 OpenAI 兼容 embedding。
 
     OpenAI: text-embedding-3-small (1536d) / text-embedding-3-large (3072d)
     DashScope: text-embedding-v4 (1024d, configurable)

@@ -1,4 +1,4 @@
-"""Document ingestion endpoints."""
+"""文档摄取端点。"""
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 

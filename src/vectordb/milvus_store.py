@@ -1,9 +1,9 @@
-"""Milvus vector store — supports both Lite (dev) and Standalone (production)."""
+"""Milvus 向量存储，支持 Lite（开发）和 Standalone（生产）模式。"""
 
 import numpy as np
 
 from src.core.config import get_config
-from src.core.exceptions import ConnectionError
+from src.core.exceptions import CollectionNotFoundError, ConnectionError
 from src.core.logging import get_logger
 from src.vectordb.base import BaseVectorDB, SearchResult
 
@@ -32,16 +32,34 @@ class MilvusStore(BaseVectorDB):
         if self._client is not None:
             return
         try:
-            from pymilvus import connections, utility
+            from pymilvus import connections
             if self._mode == "lite":
                 connections.connect(alias="default", uri=self._uri)
             else:
                 host = get_config().get("vectordb", {}).get("host", "localhost")
                 port = get_config().get("vectordb", {}).get("port", 19530)
                 connections.connect(alias="default", host=host, port=port)
+            self._client = "default"
             logger.info("milvus_connected", mode=self._mode, uri=self._uri)
+        except ModuleNotFoundError as e:
+            if self._mode == "lite" and e.name == "milvus_lite":
+                raise ConnectionError(
+                    "Failed to connect to Milvus Lite: missing 'milvus_lite' runtime. "
+                    "Install dependencies with: pip install -e \".[dev]\" "
+                    "or pip install \"pymilvus[milvus_lite]>=2.4\""
+                ) from e
+            raise ConnectionError(f"Failed to connect to Milvus: {e}") from e
         except Exception as e:
             raise ConnectionError(f"Failed to connect to Milvus: {e}") from e
+
+    def _ensure_collection_exists(self, name: str) -> None:
+        from pymilvus import utility
+
+        if not utility.has_collection(name):
+            raise CollectionNotFoundError(
+                f"Milvus collection '{name}' does not exist. "
+                "Please ingest documents before querying the knowledge base."
+            )
 
     def create_collection(self, name: str | None = None, dim: int | None = None, drop_existing: bool = False) -> None:
         from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, utility
@@ -86,12 +104,13 @@ class MilvusStore(BaseVectorDB):
         try:
             coll.load()
         except NotImplementedError:
-            pass  # milvus-lite loads automatically
+            pass  # milvus-lite 会自动加载
 
     def insert(self, chunks_with_vectors: list[tuple]) -> None:
         from pymilvus import Collection
 
         self._connect()
+        self._ensure_collection_exists(self._collection_name)
         collection = Collection(self._collection_name)
 
         ids, doc_ids, contents, indices, vectors, metadatas = [], [], [], [], [], []
@@ -116,6 +135,7 @@ class MilvusStore(BaseVectorDB):
         from pymilvus import Collection
 
         self._connect()
+        self._ensure_collection_exists(self._collection_name)
         collection = Collection(self._collection_name)
         self._ensure_loaded(self._collection_name)
 
@@ -149,6 +169,7 @@ class MilvusStore(BaseVectorDB):
         from pymilvus import Collection
 
         self._connect()
+        self._ensure_collection_exists(self._collection_name)
         collection = Collection(self._collection_name)
         count_before = collection.num_entities
         collection.delete(f'document_id == "{document_id}"')
@@ -159,6 +180,7 @@ class MilvusStore(BaseVectorDB):
         from pymilvus import Collection
 
         self._connect()
+        self._ensure_collection_exists(self._collection_name)
         return Collection(self._collection_name).num_entities
 
     def drop_collection(self) -> None:
@@ -179,7 +201,7 @@ class MilvusStore(BaseVectorDB):
         self._client = None
 
     def _build_filter_expr(self, filters: dict) -> str:
-        """Build a Milvus scalar filter expression from a dict."""
+        """根据字典构建 Milvus 标量过滤表达式。"""
         parts: list[str] = []
         for key, value in filters.items():
             if isinstance(value, str):

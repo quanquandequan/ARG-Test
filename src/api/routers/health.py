@@ -1,4 +1,4 @@
-"""Health check endpoints."""
+"""健康检查端点。"""
 
 from fastapi import APIRouter
 
@@ -38,9 +38,9 @@ async def ready():
 
     try:
         reranker = deps.get_singleton_reranker()
-        # For API-based rerankers (OpenAI, DashScope), is_loaded() only checks
-        # that the API key env-var is set — it does NOT verify remote connectivity.
-        # For local BgeReranker it checks that the model weights are in memory.
+        # 对基于 API 的 reranker（OpenAI、DashScope），is_loaded() 只检查
+        # API key 环境变量是否已设置，并不验证远程连通性。
+        # 对本地 BgeReranker，则检查模型权重是否在内存中。
         checks["reranker"] = reranker.is_loaded()
     except Exception:
         logger.exception("ready_reranker_failed")
@@ -48,7 +48,7 @@ async def ready():
 
     try:
         llm = deps.get_singleton_llm()
-        # Checks that the provider was constructed; does not make a remote call.
+        # 只检查 provider 已构造，不发起远程调用。
         checks["llm"] = llm is not None
     except Exception:
         logger.exception("ready_llm_failed")

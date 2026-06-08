@@ -1,8 +1,8 @@
-"""XMind mind-map reader — extracts topic tree from .xmind files.
+"""XMind 思维导图 reader：从 .xmind 文件抽取主题树。
 
-XMind files are ZIP archives containing content.json (XMind Zen / 2020+) and/or
-content.xml (legacy XMind 8). JSON is preferred when both exist, as the XML copy
-is often a stale/template artefact from XMind's dual-format export.
+XMind 文件是 ZIP 归档，包含 content.json（XMind Zen / 2020+）和/或
+content.xml（旧版 XMind 8）。两者同时存在时优先使用 JSON，因为 XML 副本
+通常是 XMind 双格式导出留下的陈旧模板产物。
 """
 
 import json as _json
@@ -34,14 +34,14 @@ class XmindReader(BaseReader):
                         f"Unrecognized XMind format: no content.xml or content.json in {path}"
                     )
 
-                # Prefer JSON (XMind Zen / 2020+), it's always the real data source
-                # when both formats exist. The XML copy is often a stale template.
+                # 优先使用 JSON（XMind Zen / 2020+）；两种格式同时存在时，
+                # JSON 始终是真实数据源，XML 副本通常是陈旧模板。
                 if has_json:
                     json_bytes = zf.read("content.json")
                     if len(json_bytes) > 500:
                         return self._read_zen(json_bytes, path)
 
-                # Fall back to XML, but skip if it's the corruption warning template
+                # 兜底使用 XML；如果是损坏警告模板则跳过
                 if has_xml:
                     xml_bytes = zf.read("content.xml")
                     if _XML_CORRUPT_SENTINEL in xml_bytes:

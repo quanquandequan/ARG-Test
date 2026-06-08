@@ -1,4 +1,4 @@
-"""Requirements analysis endpoint — upload a doc, get a Requirement Graph."""
+"""需求分析端点：上传文档并获取 Requirement Graph。"""
 
 from pathlib import Path
 
@@ -15,10 +15,9 @@ _SUPPORTED_SUFFIXES = {".txt", ".md", ".pdf", ".xlsx", ".xlsm", ".xmind"}
 
 
 class AnalyzeRequirementsResponse(BaseModel):
-    """Response from the requirements analysis endpoint."""
+    """需求分析端点响应。"""
 
     json_path: str
-    markdown_path: str
     module: str
     summary: str
 
@@ -33,7 +32,7 @@ async def analyze_requirements(
         "", description="输出目录（当前保留字段，默认由 ArtifactRepository 管理）"
     ),
 ):
-    """Upload a requirements document and receive a structured Requirement Graph."""
+    """上传需求文档并接收结构化 Requirement Graph。"""
     suffix = Path(file.filename or "upload").suffix.lower()
     if suffix not in _SUPPORTED_SUFFIXES:
         raise HTTPException(
@@ -64,7 +63,6 @@ async def analyze_requirements(
         )
         return AnalyzeRequirementsResponse(
             json_path=str(result.json_artifact.path),
-            markdown_path=str(result.markdown_artifact.path),
             module=result.analysis.module,
             summary=result.analysis.summary,
         )

@@ -1,4 +1,4 @@
-"""Structured logging with structlog."""
+"""基于 structlog 的结构化日志。"""
 
 import logging
 import sys
@@ -53,7 +53,7 @@ def setup_logging() -> None:
     root_logger.addHandler(handler)
     root_logger.setLevel(level)
 
-    # Quiet noisy third-party loggers
+    # 降低噪声较多的第三方 logger 级别
     for name in ("pymilvus", "httpx", "httpcore", "urllib3"):
         logging.getLogger(name).setLevel(logging.WARNING)
 

@@ -1,7 +1,7 @@
-"""Excel (.xlsx) reader — extracts structured cell data into readable text.
+"""Excel（.xlsx）reader：将结构化单元格数据抽取为可读文本。
 
-Each row becomes a line. The first row is treated as a header and prepended
-to each cell as context (e.g. "Status: Open | Priority: High").
+每一行会转换为一行文本。第一行视为表头，并作为上下文前缀拼到每个单元格前
+（例如 "Status: Open | Priority: High"）。
 """
 
 import uuid
@@ -37,7 +37,7 @@ class XlsxReader(BaseReader):
             if not rows:
                 continue
 
-            # First row as header
+            # 第一行作为表头
             headers = [str(h) if h is not None else "" for h in rows[0]]
             data_rows = rows[1:]
 

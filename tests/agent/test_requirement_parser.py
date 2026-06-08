@@ -1,4 +1,4 @@
-"""Tests for RequirementParserTool."""
+"""RequirementParserTool 测试。"""
 
 from __future__ import annotations
 
@@ -139,6 +139,20 @@ async def test_kb_context_in_llm_prompt(tool, llm_valid):
     await tool.execute(requirement=_MINIMAL_REQ, kb_context="历史用例：...")
     user_msg = next(m for m in llm_valid.last_messages if m.role == "user")
     assert "历史用例" in user_msg.content
+    assert user_msg.content.index("需求文档：") < user_msg.content.index(
+        "【历史知识库参考（辅助）】"
+    )
+
+
+@pytest.mark.asyncio
+async def test_parser_prompt_declares_prd_as_only_fact_source(tool, llm_valid):
+    await tool.execute(requirement=_MINIMAL_REQ, kb_context="历史用例：...")
+    sys_msg = next(m for m in llm_valid.last_messages if m.role == "system")
+    user_msg = next(m for m in llm_valid.last_messages if m.role == "user")
+
+    assert "当前输入的需求文档是唯一的需求事实来源" in sys_msg.content
+    assert "features、acceptance_criteria、business_rules" in sys_msg.content
+    assert "不得作为当前需求事实来源" in user_msg.content
 
 
 @pytest.mark.asyncio

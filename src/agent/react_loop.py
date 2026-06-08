@@ -1,10 +1,10 @@
-"""ReAct Agent — Think-Act-Observe loop with tool calling.
+"""ReAct Agent：带工具调用的 Think-Act-Observe 循环。
 
-Both ``run()`` (non-streaming) and ``run_stream()`` (SSE streaming) share a
-single ``_react_core()`` async generator that yields typed event dataclasses.
-This eliminates the previous ~80% code duplication and the double-LLM-call
-in the streaming path (the final answer is now chunked from the cached
-``generate_chat`` response instead of calling ``generate_chat_stream`` again).
+``run()``（非流式）和 ``run_stream()``（SSE 流式）共享同一个
+``_react_core()`` 异步生成器，由它产出类型化事件 dataclass。
+这样消除了过去约 80% 的代码重复，也避免了流式路径里的二次 LLM 调用
+（最终答案现在从缓存的 ``generate_chat`` 响应切分，而不是再次调用
+``generate_chat_stream``）。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
-from src.agent.base_tool import BaseTool
+from src.agent.base_tool import FINAL_ANSWER_PASSTHROUGH, BaseTool
 from src.agent.history import truncate_history
 from src.agent.tool_registry import ToolRegistry
 from src.agent.types import AgentResult, AgentStep, Citation
@@ -27,7 +27,7 @@ from src.llm.types import Message, ToolCall
 
 logger = get_logger(__name__)
 
-# ── Internal event types yielded by _react_core ───────────────────────────
+# ── _react_core 产出的内部事件类型 ───────────────────────────────────────
 
 
 @dataclass
@@ -42,6 +42,7 @@ class _ToolResultEvent:
     result: str
     duration_ms: float
     tool_call: ToolCall
+    final_answer_mode: str
 
 
 
@@ -64,12 +65,12 @@ class _ForcedAnswer:
 
 _Event = _ToolCallEvent | _ToolResultEvent | _FinalAnswer | _ForcedAnswer
 
-# Approximate character count per SSE token chunk.
+# 每个 SSE token 分片的大致字符数。
 _TOKEN_CHUNK_SIZE = 20
 
 
 class ReActAgent:
-    """ReAct-pattern Agent: Think -> Act -> Observe -> Repeat -> Answer."""
+    """ReAct 模式 Agent：Think -> Act -> Observe -> Repeat -> Answer。"""
 
     def __init__(
         self,
@@ -94,10 +95,10 @@ class ReActAgent:
     def tool_names(self) -> list[str]:
         return self._registry.names()
 
-    # ── Message building ─────────────────────────────────────────────────
+    # ── 消息构建 ────────────────────────────────────────────────────────
 
     def _build_messages(self, history: list[Message] | None, query: str) -> list[Message]:
-        """Assemble system + truncated history + current user query."""
+        """组装 system、截断后的历史记录和当前用户问题。"""
         from datetime import date
 
         truncated = truncate_history(
@@ -111,16 +112,21 @@ class ReActAgent:
             + [Message(role="user", content=query)]
         )
 
-    # ── Tool execution helper ────────────────────────────────────────────
+    # ── 工具执行辅助方法 ────────────────────────────────────────────────
 
     async def _safe_execute(
         self, tc: ToolCall, trace_id: str
-    ) -> tuple[ToolCall, str, float]:
-        """Execute one tool call, catch any exception, return (tc, result, ms)."""
+    ) -> tuple[ToolCall, str, float, str]:
+        """执行一次工具调用，捕获异常，并返回工具结果与终态回答策略。"""
         t0 = time.perf_counter()
+        final_answer_mode = ""
         try:
             tool = self._registry.get(tc.name)
-            result = await tool.execute(**tc.arguments)
+            final_answer_mode = getattr(tool, "final_answer_mode", "")
+            result = await tool.execute(
+                **tc.arguments,
+                request_id=trace_id,
+            )
         except Exception as e:
             result = f"工具执行错误: {e}"
             logger.warning(
@@ -130,9 +136,9 @@ class ReActAgent:
                 error=str(e),
             )
         dur = (time.perf_counter() - t0) * 1000
-        return tc, result, dur
+        return tc, result, dur, final_answer_mode
 
-    # ── Core ReAct loop (shared by run and run_stream) ───────────────────
+    # ── 核心 ReAct 循环（run 与 run_stream 共用）────────────────────────
 
     async def _react_core(
         self,
@@ -141,10 +147,10 @@ class ReActAgent:
         temperature: float | None = None,
         trace_id: str = "",
     ) -> AsyncGenerator[_Event]:
-        """Unified ReAct loop that yields typed events.
+        """产出类型化事件的统一 ReAct 循环。
 
-        Both ``run()`` and ``run_stream()`` consume these events, eliminating
-        duplicated loop logic and the double-LLM-call in the streaming path.
+        ``run()`` 与 ``run_stream()`` 都消费这些事件，从而消除重复循环逻辑，
+        并避免流式路径中的二次 LLM 调用。
         """
         messages = self._build_messages(history, query)
         tool_defs = self._registry.definitions()
@@ -164,7 +170,7 @@ class ReActAgent:
             )
 
             if response.stop_reason == "tool_use" and response.tool_calls:
-                # ── Tool call iteration ──
+                # ── 工具调用轮次 ──
                 llm_ms = (time.perf_counter() - iter_t0) * 1000
                 logger.info(
                     "agent_tool_calls",
@@ -185,12 +191,13 @@ class ReActAgent:
                     tool_calls=response.tool_calls,
                 ))
 
-                # Execute all tool calls concurrently
+                # 并发执行所有工具调用
                 tc_results = list(await asyncio.gather(
                     *[self._safe_execute(tc, trace_id) for tc in response.tool_calls]
                 ))
 
-                for tc, result, dur_ms in tc_results:
+                passthrough_results: list[str] = []
+                for tc, result, dur_ms, final_answer_mode in tc_results:
                     processing_stages[f"iter{i}.{tc.name}"] = round(dur_ms, 1)
                     steps.append(AgentStep(
                         step_index=i,
@@ -209,10 +216,34 @@ class ReActAgent:
                         result=result,
                         duration_ms=round(dur_ms, 1),
                         tool_call=tc,
+                        final_answer_mode=final_answer_mode,
                     )
+                    if final_answer_mode == FINAL_ANSWER_PASSTHROUGH:
+                        passthrough_results.append(result)
+
+                if passthrough_results:
+                    total_ms = (time.perf_counter() - run_t0) * 1000
+                    processing_stages["total"] = round(total_ms, 1)
+                    text = "\n\n".join(passthrough_results)
+                    citations = self._extract_citations(text)
+                    logger.info(
+                        "agent_passthrough_answer",
+                        trace_id=trace_id,
+                        iteration=i,
+                        citations=len(citations),
+                        total_ms=round(total_ms, 1),
+                    )
+                    yield _FinalAnswer(
+                        text=text,
+                        iteration=i,
+                        citations=citations,
+                        processing_stages=processing_stages,
+                        steps=steps,
+                    )
+                    return
 
             else:
-                # ── Final answer ──
+                # ── 最终答案 ──
                 iter_ms = (time.perf_counter() - iter_t0) * 1000
                 steps.append(AgentStep(
                     step_index=i,
@@ -241,7 +272,7 @@ class ReActAgent:
                 )
                 return
 
-        # Max iterations exceeded — force a final answer without tools
+        # 超过最大轮次后，强制不使用工具生成最终答案
         logger.warning(
             "agent_max_iterations",
             trace_id=trace_id,
@@ -263,25 +294,24 @@ class ReActAgent:
             steps=steps,
         )
 
-    # ── Token streaming helper ───────────────────────────────────────────
+    # ── Token 流式辅助方法 ──────────────────────────────────────────────
 
     @staticmethod
     async def _yield_tokens(text: str) -> AsyncGenerator[str]:
-        """Yield the buffered LLM response as SSE token events.
+        """将已缓存的 LLM 响应作为 SSE token 事件产出。
 
-        **Simulated streaming**: this method does NOT call the LLM again.
-        Instead it splits the already-received ``generate_chat`` response into
-        fixed-size chunks (``_TOKEN_CHUNK_SIZE`` chars) and yields them with an
-        ``asyncio.sleep(0)`` between each chunk to let the event loop breathe.
+        **模拟流式**：此方法不会再次调用 LLM。
+        它会把已收到的 ``generate_chat`` 响应拆成固定大小的分片
+        （``_TOKEN_CHUNK_SIZE`` 字符），并在每个分片之间通过
+        ``asyncio.sleep(0)`` 让出事件循环。
 
-        Trade-offs vs. true ``generate_chat_stream``:
-        - ✅ Single LLM call per iteration — no duplicate cost or latency.
-        - ✅ Tool-call vs. final-answer detection is reliable (full response).
-        - ⚠️  Chunks arrive at network speed, not at LLM token-generation speed.
-          The client perceives a short pause then a burst, rather than a steady
-          per-token drip.  For most chat UIs this is acceptable; if true
-          token-level streaming is required, swap this for ``generate_chat_stream``
-          and handle tool-call detection in the streaming parser.
+        相比真正的 ``generate_chat_stream``，这里的取舍是：
+        - 每轮只调用一次 LLM，避免重复成本和延迟。
+        - 工具调用与最终答案的判断更可靠（基于完整响应）。
+        - 分片以网络速度到达，而不是按 LLM 生成 token 的速度到达。
+          客户端会感知为短暂停顿后快速输出，而非稳定逐 token 输出。
+          对大多数聊天 UI 这是可接受的；若必须使用真实 token 级流式，
+          可替换为 ``generate_chat_stream``，并在流式解析器中处理工具调用检测。
         """
         for start in range(0, len(text), _TOKEN_CHUNK_SIZE):
             chunk = text[start : start + _TOKEN_CHUNK_SIZE]
@@ -292,7 +322,7 @@ class ReActAgent:
         answer_payload = json.dumps({"text": text}, ensure_ascii=False)
         yield f"event: answer\ndata: {answer_payload}\n\n"
 
-    # ── Public API ───────────────────────────────────────────────────────
+    # ── 对外 API ────────────────────────────────────────────────────────
 
     async def run(
         self,
@@ -337,11 +367,10 @@ class ReActAgent:
         temperature: float | None = None,
         trace_id: str | None = None,
     ) -> AsyncGenerator[str]:
-        """Stream agent activity as SSE-format events.
+        """以 SSE 格式事件流式输出 Agent 活动。
 
-        Uses ``generate_chat`` (non-streaming) for tool-call detection and
-        chunks the cached response for token-by-token output, avoiding the
-        extra LLM call that the previous implementation required.
+        使用 ``generate_chat``（非流式）进行工具调用检测，并切分缓存响应
+        来输出逐 token 效果，避免旧实现所需的额外 LLM 调用。
         """
         trace_id = trace_id or str(uuid.uuid4())
 
@@ -373,11 +402,11 @@ class ReActAgent:
                 async for token_event in self._yield_tokens(event.text):
                     yield token_event
 
-    # ── Citation extraction ──────────────────────────────────────────────
+    # ── 引用提取 ────────────────────────────────────────────────────────
 
     @staticmethod
     def _extract_citations(text: str) -> list[Citation]:
-        """Extract citation markers [N] from the final answer."""
+        """从最终答案中提取引用标记 [N]。"""
         found: set[int] = set()
         for match in re.finditer(r"\[(\d+)\]", text):
             found.add(int(match.group(1)))

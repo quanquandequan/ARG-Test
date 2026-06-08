@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Batch document ingestion CLI.
+"""批量文档摄取 CLI。
 
-Usage:
+用法：
     python scripts/ingest_docs.py --dir ./data/documents --ext pdf,md,txt
     python scripts/ingest_docs.py --dir ./data/documents --collection my_kb
 """
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-# Add project root to path
+# 将项目根目录加入路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.core.config import load_config
@@ -68,7 +68,7 @@ def main():
         vectors = embedder.embed_documents(texts)
         rows = [
             (c.id, c.document_id, c.content, c.chunk_index, vec,
-             {"source_path": str(path)})  # metadata
+             {"source_path": str(path)})  # 元数据
             for c, vec in zip(chunks, vectors)
         ]
         vectordb.insert(rows)

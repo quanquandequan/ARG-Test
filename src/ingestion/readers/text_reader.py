@@ -1,4 +1,4 @@
-"""Plain text reader with encoding detection."""
+"""带编码检测的纯文本 reader。"""
 
 import uuid
 from pathlib import Path
@@ -23,7 +23,7 @@ class TextReader(BaseReader):
         except (UnicodeDecodeError, LookupError):
             content = raw_bytes.decode("utf-8", errors="replace")
 
-        # Strip BOM if present
+        # 如存在 BOM，则移除
         if content and content[0] == "﻿":
             content = content[1:]
 

@@ -1,4 +1,4 @@
-"""A12: CLI unit tests — exercise output formatting and SSE parsing helpers."""
+"""A12：CLI 单元测试，覆盖输出格式化与 SSE 解析辅助方法。"""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ class TestFormatAnswer:
     def test_markdown_table_re_aligned(self):
         table = "| 名称 | 分数 |\n| --- | --- |\n| RAG | 95 |"
         result = _format_answer(table)
-        # Output must still be a table with pipe characters
+        # 输出仍必须是包含管道符的表格
         assert "|" in result
         assert "RAG" in result
 
@@ -135,10 +135,10 @@ class TestRunQuery:
 
         captured = capsys.readouterr()
         assert "verbose-trace-id" in captured.out
-        assert "88" in captured.out  # total timing
+        assert "88" in captured.out  # 总耗时
 
     async def test_stream_collects_tokens(self, capsys):
-        """Streaming mode should print token text as it arrives."""
+        """流式模式应在 token 文本到达时立即打印。"""
         events = [
             'event: start\ndata: {"trace_id": "t1"}\n\n',
             'event: token\ndata: {"text": "Hello"}\n\n',

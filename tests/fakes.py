@@ -1,7 +1,7 @@
-"""In-memory fakes for unit/component/API tests.
+"""用于单元 / 组件 / API 测试的内存 fake。
 
-These mirror the production interfaces (BaseEmbedder/BaseLLM/...) so we can
-exercise the pipeline without loading real models or running Milvus.
+这些 fake 对齐生产接口（BaseEmbedder/BaseLLM/...），因此无需加载真实模型
+或运行 Milvus，也能测试 pipeline。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from src.vectordb.base import BaseVectorDB, SearchResult
 
 
 class FakeEmbedder(BaseEmbedder):
-    """Deterministic hash-based embedder. Same text → same vector."""
+    """基于哈希的确定性 embedder；相同文本得到相同向量。"""
 
     def __init__(self, dim: int = 1024):
         self._dim = dim
@@ -50,7 +50,7 @@ class FakeEmbedder(BaseEmbedder):
 
 
 class FakeVectorDB(BaseVectorDB):
-    """In-memory vector store with cosine-similarity search."""
+    """支持余弦相似度搜索的内存向量存储。"""
 
     def __init__(self) -> None:
         self._store: dict[str, dict] = {}
@@ -125,17 +125,17 @@ class FakeVectorDB(BaseVectorDB):
     def drop_collection(self) -> None:
         self._store.clear()
 
-    def close(self) -> None:  # pragma: no cover - nothing to do
+    def close(self) -> None:  # pragma: no cover - 无需处理
         pass
 
 
 class FakeLLM(BaseLLM):
-    """Configurable fake LLM for testing pipeline + Agent flows.
+    """用于测试 pipeline 与 Agent 流程的可配置 fake LLM。
 
-    Can be set to return:
-    - text responses (end_turn)
-    - tool calls (tool_use)
-    - a sequence of mixed responses for multi-step agent tests
+    可设置为返回：
+    - 文本响应（end_turn）
+    - 工具调用（tool_use）
+    - 多步骤 Agent 测试使用的混合响应序列
     """
 
     def __init__(
@@ -150,7 +150,7 @@ class FakeLLM(BaseLLM):
         self.last_messages: list[Message] | None = None
         self.last_tools: list[dict] | None = None
         self._loaded = True
-        # Pre-programmed response sequence for agent testing
+        # 用于 Agent 测试的预置响应序列
         self._responses = responses
         self._response_idx = 0
         self._stream_content_cache: str | None = None
@@ -211,7 +211,7 @@ class FakeLLM(BaseLLM):
 
 
 class FakeReranker(BaseReranker):
-    """Pass-through reranker that keeps original ordering and truncates to top_k."""
+    """透传式 reranker：保持原始顺序并截断到 top_k。"""
 
     def __init__(self) -> None:
         self._loaded = True

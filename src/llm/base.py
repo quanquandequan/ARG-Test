@@ -1,4 +1,4 @@
-"""Abstract base class for LLM providers."""
+"""LLM provider 抽象基类。"""
 
 from abc import ABC, abstractmethod
 from typing import AsyncIterator

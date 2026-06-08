@@ -1,4 +1,4 @@
-"""Shared utility functions — gRPC noise suppression, formatting, SSE parsing."""
+"""共享工具函数：gRPC 噪声抑制、格式化与 SSE 解析。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import re
 import threading
 
 
-# -- gRPC stderr noise suppression ------------------------------------------
+# -- gRPC stderr 噪声抑制 ----------------------------------------------------
 
 _GRPC_NOISE = re.compile(
     rb"(?:GOAWAY|too_many_pings|chttp2_transport\.cc|grpc_init)"
@@ -16,10 +16,10 @@ _GRPC_NOISE = re.compile(
 
 
 def suppress_grpc_stderr() -> None:
-    """Filter gRPC C++ core noise from stderr (GOAWAY, too_many_pings, etc.).
+    """过滤 stderr 中的 gRPC C++ core 噪声（GOAWAY、too_many_pings 等）。
 
-    Must be called early at process startup, before importing gRPC-dependent
-    libraries.  Safe to call multiple times (idempotent via module-level guard).
+    必须在进程启动早期、导入依赖 gRPC 的库之前调用。
+    可安全重复调用（通过模块级守卫保持幂等）。
     """
     _orig_stderr_fd = os.dup(2)
     _rfd, _wfd = os.pipe()
@@ -45,11 +45,11 @@ def suppress_grpc_stderr() -> None:
     threading.Thread(target=_filter, daemon=True).start()
 
 
-# -- CJK-aware display width and table formatting -------------------------
+# -- CJK 感知的显示宽度与表格格式化 ---------------------------------------
 
 
 def display_width(s: str) -> int:
-    """Return display width: CJK chars = 2, ASCII = 1."""
+    """返回显示宽度：CJK 字符 = 2，ASCII = 1。"""
     import unicodedata
 
     w = 0
@@ -59,7 +59,7 @@ def display_width(s: str) -> int:
 
 
 def format_answer(text: str) -> str:
-    """Re-align markdown tables for terminal display (CJK-aware)."""
+    """为终端展示重新对齐 markdown 表格（CJK 感知）。"""
     lines = text.split("\n")
     out: list[str] = []
     i = 0
@@ -99,11 +99,11 @@ def format_answer(text: str) -> str:
     return "\n".join(out)
 
 
-# -- SSE event parsing -----------------------------------------------------
+# -- SSE 事件解析 -----------------------------------------------------------
 
 
 def parse_sse_event(raw: str) -> tuple[str, dict | str]:
-    """Return (event_type, data) from a raw SSE block."""
+    """从原始 SSE 块返回 (event_type, data)。"""
     event_type = "message"
     data_str = ""
     for line in raw.splitlines():
@@ -117,11 +117,11 @@ def parse_sse_event(raw: str) -> tuple[str, dict | str]:
         return event_type, data_str
 
 
-# -- dotenv loader ----------------------------------------------------------
+# -- dotenv 加载器 ----------------------------------------------------------
 
 
 def load_dotenv(project_root) -> None:
-    """Load .env file from project root without python-dotenv dependency."""
+    """不依赖 python-dotenv，从项目根目录加载 .env 文件。"""
     env_path = project_root / ".env"
     if not env_path.is_file():
         return

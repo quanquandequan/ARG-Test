@@ -1,4 +1,4 @@
-"""BGE-Reranker cross-encoder for precision scoring."""
+"""用于精排打分的 BGE-Reranker cross-encoder。"""
 
 import asyncio
 
@@ -12,7 +12,7 @@ logger = get_logger(__name__)
 
 
 class BgeReranker(BaseReranker):
-    """Cross-encoder reranking with BAAI/bge-reranker-v2-m3."""
+    """使用 BAAI/bge-reranker-v2-m3 执行 cross-encoder 重排。"""
 
     def __init__(
         self,

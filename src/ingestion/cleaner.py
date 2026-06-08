@@ -1,16 +1,16 @@
-"""Text normalization and cleaning for Chinese content."""
+"""中文内容的文本规范化与清洗。"""
 
 import re
 import unicodedata
 
 
 class TextCleaner:
-    """Normalize and clean extracted text."""
+    """规范化并清洗抽取出的文本。"""
 
-    # Fullwidth punctuation to halfwidth mapping
+    # 全角标点到半角标点的映射
     _FULLWIDTH_MAP: dict[int, int] = {}
     for _fw, _hw in [
-        (0x3000, 0x0020),  # IDEOGRAPHIC SPACE → SPACE
+        (0x3000, 0x0020),  # 全角空格 → 半角空格
         (0xFF0C, 0x002C),  # ， → ,
         (0xFF0E, 0x002E),  # ． → .
         (0xFF1A, 0x003A),  # ： → :
@@ -25,7 +25,7 @@ class TextCleaner:
     ]:
         _FULLWIDTH_MAP[_fw] = _hw
 
-    # Chinese quotes normalization
+    # 中文引号规范化
     _QUOTE_PAIRS = [
         ("‘", "’"),  # ' '
         ("「", "」"),  # 「 」
@@ -38,22 +38,22 @@ class TextCleaner:
 
         text = unicodedata.normalize("NFKC", text)
 
-        # Normalize fullwidth punctuation
+        # 规范化全角标点
         text = text.translate(self._FULLWIDTH_MAP)
 
-        # Normalize Chinese quotes to standard form
+        # 将中文引号规范化为标准形式
         for left, right in self._QUOTE_PAIRS:
             text = text.replace(left, "“").replace(right, "”")
 
-        # Collapse excessive whitespace but preserve paragraph breaks
+        # 折叠过多空白，同时保留段落换行
         text = re.sub(r"[^\S\n]{2,}", " ", text)
-        # Remove lines that are purely whitespace, but preserve newlines
+        # 移除纯空白行，但保留换行结构
         text = re.sub(r"\n{3,}", "\n\n", text)
-        # Normalize leading/trailing whitespace per line
+        # 规范化每行首尾空白
         lines = [line.strip() for line in text.splitlines()]
         text = "\n".join(lines)
 
-        # Remove control characters (except \n, \t)
+        # 移除控制字符（保留 \n、\t）
         text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
 
         return text.strip()

@@ -1,11 +1,11 @@
-"""IngestionPipeline orchestrates load → clean → chunk → embed → persist."""
+"""IngestionPipeline 编排 load → clean → chunk → embed → persist 流程。"""
 
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.logging import get_logger
 from src.embedding.base import BaseEmbedder
-from src.ingestion.chunker import Chunk, ChineseChunker
+from src.ingestion.chunker import ChineseChunker, Chunk
 from src.ingestion.cleaner import TextCleaner
 from src.ingestion.loader import DocumentLoader
 from src.ingestion.readers.base import Document
@@ -23,7 +23,7 @@ class PersistedIngestion:
 
 
 class IngestionPipeline:
-    """Orchestrate document ingestion end-to-end."""
+    """端到端编排文档摄取流程。"""
 
     def __init__(
         self,
@@ -40,7 +40,7 @@ class IngestionPipeline:
         self._vectordb = vectordb
 
     def ingest(self, path: Path) -> tuple[Document, list[Chunk]]:
-        """Load, clean, and chunk a single document."""
+        """加载、清洗并分块单个文档。"""
         doc = self._loader.load(path)
         logger.info("document_loaded", path=str(path), doc_id=doc.id)
 
@@ -63,7 +63,7 @@ class IngestionPipeline:
         path: Path,
         source_path: str | None = None,
     ) -> PersistedIngestion:
-        """Run the full ingestion pipeline and persist vectors to the vector DB."""
+        """运行完整摄取流程，并将向量持久化到向量数据库。"""
         if self._embedder is None or self._vectordb is None:
             raise RuntimeError(
                 "IngestionPipeline requires embedder and vectordb for ingest_and_store()."
@@ -80,6 +80,9 @@ class IngestionPipeline:
 
         vectors = self._embedder.embed_documents([chunk.content for chunk in chunks])
         rows = []
+        resolved_source_path = source_path or str(path)
+        source = Path(resolved_source_path)
+        document_metadata = dict(doc.metadata or {})
         for chunk, vec in zip(chunks, vectors):
             rows.append(
                 (
@@ -89,7 +92,13 @@ class IngestionPipeline:
                     chunk.chunk_index,
                     vec,
                     {
-                        "source_path": source_path or str(path),
+                        **document_metadata,
+                        "source_path": resolved_source_path,
+                        "source_name": source.name,
+                        "source_ext": source.suffix.lower(),
+                        "source_format": str(
+                            document_metadata.get("format") or source.suffix.lstrip(".")
+                        ).lower(),
                         "chunk_index": chunk.chunk_index,
                         **dict(chunk.metadata or {}),
                     },
@@ -102,5 +111,5 @@ class IngestionPipeline:
             document=doc,
             chunks=chunks,
             vectors=vectors,
-            source_path=source_path or str(path),
+            source_path=resolved_source_path,
         )

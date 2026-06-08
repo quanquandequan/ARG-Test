@@ -1,4 +1,4 @@
-"""Application service for end-to-end document ingestion."""
+"""端到端文档摄取应用服务。"""
 
 from __future__ import annotations
 
@@ -43,4 +43,3 @@ class DocumentIngestionService:
 
     def delete_document(self, document_id: str) -> int:
         return self._vectordb.delete_by_document_id(document_id)
-

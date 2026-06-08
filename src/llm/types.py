@@ -1,4 +1,4 @@
-"""Message and tool-use types for multi-turn chat."""
+"""多轮聊天的消息与工具使用类型。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ class ToolCall:
 
 @dataclass
 class ContentBlock:
-    """A streaming content block — currently only text is used."""
+    """流式内容块，目前仅使用 text。"""
 
     type: str  # "text"
     text: str = ""

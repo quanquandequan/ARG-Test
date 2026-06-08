@@ -1,4 +1,4 @@
-"""Typed DTOs for document ingestion workflows."""
+"""文档摄取工作流的类型化 DTO。"""
 
 from __future__ import annotations
 
@@ -12,4 +12,3 @@ class IngestionResult:
     chunk_count: int
     source_path: str
     metadata: dict[str, Any] = field(default_factory=dict)
-

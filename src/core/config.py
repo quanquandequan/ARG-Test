@@ -1,4 +1,4 @@
-"""Configuration loader using OmegaConf with YAML file merging and env-var interpolation."""
+"""基于 OmegaConf 的配置加载器，支持 YAML 合并和环境变量插值。"""
 
 import os
 from pathlib import Path
@@ -33,7 +33,7 @@ def load_config(env: Optional[str] = None) -> DictConfig:
 
     resolver = _EnvVarResolver()
     OmegaConf.register_new_resolver("env", resolver.resolve, replace=True)
-    # Apply env-var interpolation: ${env:LLM_PROVIDER}
+    # 应用环境变量插值：${env:LLM_PROVIDER}
     base = OmegaConf.create(OmegaConf.to_container(base, resolve=True))
 
     _CONFIG = base

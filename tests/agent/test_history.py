@@ -1,4 +1,4 @@
-"""Tests for history truncation logic."""
+"""历史记录截断逻辑测试。"""
 
 from src.agent.history import _estimate_tokens, truncate_history
 from src.llm.types import Message
@@ -10,7 +10,7 @@ def _msg(role: str, content: str) -> Message:
 
 class TestEstimateTokens:
     def test_empty_content(self):
-        # minimum 1
+        # 最小值为 1
         assert _estimate_tokens(_msg("user", "")) == 1
 
     def test_ascii_text(self):
@@ -34,10 +34,10 @@ class TestTruncateHistory:
         assert result == msgs
 
     def test_keep_last_always_preserved(self):
-        # Budget forces dropping of older messages
+        # 预算会迫使更旧消息被丢弃
         msgs = [_msg("user", "X" * 500), _msg("user", "Y"), _msg("assistant", "Z")]
         result = truncate_history(msgs, max_tokens=10, keep_last=2)
-        # Last 2 must be there
+        # 最后 2 条必须保留
         assert result[-2].content == "Y"
         assert result[-1].content == "Z"
 
@@ -46,9 +46,9 @@ class TestTruncateHistory:
         recent = [_msg("user", "A"), _msg("assistant", "B")]
         msgs = old + recent
         result = truncate_history(msgs, max_tokens=50, keep_last=2)
-        # Old messages should not appear (each costs ~320 tokens)
+        # 旧消息不应出现（每条约消耗 320 tokens）
         assert all("OLD" not in m.content for m in result)
-        assert len(result) == 2  # only the recent pair
+        assert len(result) == 2  # 只保留最近一组对话
 
     def test_all_fit_nothing_dropped(self):
         msgs = [_msg("user", "short"), _msg("assistant", "ok")] * 3

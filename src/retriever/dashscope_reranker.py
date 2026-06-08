@@ -1,4 +1,4 @@
-"""DashScope (阿里云百炼) Reranker — qwen3-rerank model."""
+"""DashScope（阿里云百炼）Reranker：qwen3-rerank 模型。"""
 
 import os
 
@@ -19,11 +19,11 @@ _DEFAULT_TIMEOUT = 30
 
 
 class DashScopeReranker(BaseReranker):
-    """Reranker via DashScope qwen3-rerank API.
+    """通过 DashScope qwen3-rerank API 实现的 Reranker。
 
-    Uses a per-request ``httpx.AsyncClient`` context manager so the underlying
-    HTTP connection is always properly closed, avoiding the "Unclosed client"
-    warning that a long-lived singleton client would produce on process exit.
+    每次请求都使用 ``httpx.AsyncClient`` 上下文管理器，确保底层 HTTP 连接
+    总能正确关闭，避免长期存活单例 client 在进程退出时产生
+    "Unclosed client" 警告。
     """
 
     def __init__(

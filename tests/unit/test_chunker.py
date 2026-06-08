@@ -1,4 +1,4 @@
-"""Unit tests for ChineseChunker."""
+"""ChineseChunker 单元测试。"""
 
 from src.ingestion.chunker import ChineseChunker
 
@@ -24,8 +24,8 @@ def test_sentence_boundaries_are_respected():
     chunks = chunker.split("doc-1", text)
     assert len(chunks) >= 2
     for c in chunks:
-        # No chunk should end mid-sentence (i.e. the last non-overlap region)
-        # We allow tail to end with 。 or be exactly one of our sentences
+        # 分块不应在句子中间结束（即最后的非重叠区域）
+        # 允许尾部以 。 结束，或刚好等于某个句子
         assert c.content.strip() != ""
 
 
@@ -42,7 +42,7 @@ def test_overlap_between_adjacent_chunks():
     text = "。".join([f"句子{i}是一段较为完整的中文表达" for i in range(10)]) + "。"
     chunks = chunker.split("doc-x", text)
     if len(chunks) >= 2:
-        # The first chunk's tail should appear at the start of the second chunk
+        # 第一个分块的尾部应出现在第二个分块的开头
         tail = chunks[0].content[-10:]
         assert any(t in chunks[1].content[:30] for t in (tail, tail[:5])) or chunks[
             1
@@ -51,12 +51,12 @@ def test_overlap_between_adjacent_chunks():
 
 def test_very_long_unpunctuated_text_is_split():
     chunker = ChineseChunker(chunk_size=30, chunk_overlap=5, min_chunk_size=4)
-    # No sentence-ending punctuation; chunker should still split via jieba
+    # 没有句末标点时，chunker 仍应通过 jieba 切分
     text = "中文文本" * 60
     chunks = chunker.split("doc-x", text)
     assert len(chunks) >= 2
     for c in chunks:
-        assert len(c.content) <= 60  # chunk_size * 1.5 upper bound on splits
+        assert len(c.content) <= 60  # 切分上限为 chunk_size * 1.5
 
 
 def test_chunk_ids_are_unique():

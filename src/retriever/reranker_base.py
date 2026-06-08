@@ -1,4 +1,4 @@
-"""Abstract base class for rerankers."""
+"""Reranker 抽象基类。"""
 
 from abc import ABC, abstractmethod
 
@@ -13,15 +13,15 @@ class BaseReranker(ABC):
         candidates: list[SearchResult],
         top_k: int | None = None,
     ) -> list[SearchResult]:
-        """Rerank candidates by relevance to query. Returns top_k results."""
+        """按与 query 的相关性重排候选项，返回 top_k 个结果。"""
         ...
 
     @abstractmethod
     def load(self) -> None:
-        """Load/prepare the reranker."""
+        """加载或准备 reranker。"""
         ...
 
     @abstractmethod
     def is_loaded(self) -> bool:
-        """Check if the reranker is ready."""
+        """检查 reranker 是否就绪。"""
         ...

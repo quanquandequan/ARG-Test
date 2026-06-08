@@ -51,21 +51,19 @@ The architecture has two main layers:
 │  Observability:                                               │
 │    • trace_id  (UUID, client-passable, attached to all logs)  │
 │    • per-step duration_ms  (LLM + tool wall-clock)            │
-│    • processing_stages  { "iter0.knowledge_search": 82.4,     │
+│    • processing_stages  { "iter0.search_knowledge": 82.4,     │
 │                            "total": 1204.1 }                  │
 └────────────────────────────────────────────────────────────────┘
          │                         │
          ▼                         ▼
-┌── KnowledgeBaseTool ──┐  ┌── WebSearchTool ────────────────┐
-│  RetrievalEngine      │  │  DuckDuckGo HTML scrape         │
-│  embed → ANN search   │  │  BEST-EFFORT — not a stable API  │
-│    (top-20)           │  │  Replace with Serper / Brave     │
-│  → rerank (top-5)     │  │  for production reliability      │
-│  → SearchResult[]     │  └─────────────────────────────────┘
-└──────────┬────────────┘
+┌── SearchKnowledgeTool ─────────┐  ┌── Other Facades ─────────────────────┐
+│  KB first, Web on demand       │  │  AnalyzeRequirementTool              │
+│  wraps KnowledgeBaseTool + Web │  │  DesignTestCasesTool                 │
+│                                 │  │  ExecuteScenarioTool                │
+└──────────┬──────────────────────┘  └─────────────────────────────────────┘
            │
            ▼
-    Milvus vector store
+    RetrievalEngine → Milvus vector store
     (Lite for dev / Standalone for prod)
 ```
 
@@ -94,13 +92,24 @@ class BaseTool(ABC):
 
 `ToolRegistry.definitions()` returns the schema list; each LLM provider converts it to its own wire format (`_tools_to_anthropic` / `_tools_to_openai`).
 
-Tool list is **config-driven** — add or remove tools in `configs/default.yaml` without touching code:
+Public tool surface is **profile-driven** — the shipped default profile exposes only the
+four high-level tools, while `mobile_debug` keeps the low-level Appium tools for debugging:
 
 ```yaml
 agent:
-  tools:
-    - knowledge_search   # KnowledgeBaseTool
-    - web_search         # WebSearchTool (best-effort)
+  profiles:
+    qa_agent:
+      tools:
+        - search_knowledge
+        - analyze_requirement
+        - design_test_cases
+        - execute_scenario
+    mobile_debug:
+      tools:
+        - device_tool
+        - screen_tool
+        - action_tool
+        - assertion_tool
 ```
 
 ---
@@ -230,9 +239,13 @@ All runtime behaviour is controlled by `configs/default.yaml` (override per envi
 agent:
   max_iterations: 10
   max_history_tokens: 4000    # sliding-window token budget
-  tools:
-    - knowledge_search
-    - web_search
+  profiles:
+    qa_agent:
+      tools:
+        - search_knowledge
+        - analyze_requirement
+        - design_test_cases
+        - execute_scenario
   system_prompt: |
     …
 

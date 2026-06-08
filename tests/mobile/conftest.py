@@ -1,4 +1,4 @@
-"""Shared fixtures for mobile tool tests.
+"""移动端工具测试的共享 fixture。
 
 All tests use FakeAppiumDriverManager — no real Appium / device required.
 """
@@ -73,7 +73,7 @@ HOME_XML = """\
 
 
 class FakeAppiumDriverManager(AppiumDriverManager):
-    """Fake driver manager for testing without a real Appium session."""
+    """无需真实 Appium 会话即可测试的 fake driver manager。"""
 
     def __init__(
         self,
@@ -95,7 +95,7 @@ class FakeAppiumDriverManager(AppiumDriverManager):
         self._tapped: list[tuple[int, int]] = []
         self._typed: list[str] = []
         self._swiped: list[dict] = []
-        self._driver = None  # satisfy parent's _require_driver logic
+        self._driver = None  # 满足父类 _require_driver 逻辑
 
     def is_connected(self) -> bool:
         return self._connected
@@ -103,7 +103,7 @@ class FakeAppiumDriverManager(AppiumDriverManager):
     def _require_driver(self):
         if not self._connected:
             raise RuntimeError("设备未连接，请先调用 device_tool action=connect 建立 Appium 会话。")
-        return self  # return self as a fake driver
+        return self  # 将 self 作为 fake driver 返回
 
     async def connect(self, server_url: str, caps: dict) -> None:
         self._connected = True

@@ -1,4 +1,4 @@
-"""Explicit application container shared by API and CLI entrypoints."""
+"""API 与 CLI 入口共享的显式应用容器。"""
 
 from __future__ import annotations
 
@@ -9,11 +9,14 @@ from omegaconf import OmegaConf
 from src.agent.react_loop import ReActAgent
 from src.agent.tool_factory import build_agent_tools
 from src.application.artifact_repository import LocalArtifactRepository
+from src.application.execution_service import MobileExecutionService
 from src.application.ingestion_service import DocumentIngestionService
 from src.application.requirement_services import (
     RequirementAnalysisService,
     TestCaseGenerationService,
 )
+from src.application.workflows import TestCaseGenerationWorkflow
+from src.application.workflows.execution_workflow import ExecutionWorkflow
 from src.core.config import get_config
 from src.embedding.base import BaseEmbedder
 from src.embedding.factory import get_embedder
@@ -23,10 +26,12 @@ from src.ingestion.loader import DocumentLoader
 from src.ingestion.pipeline import IngestionPipeline
 from src.llm.base import BaseLLM
 from src.llm.factory import get_llm
+from src.mobile.driver import AppiumDriverManager
 from src.retriever.dense_retriever import DenseRetriever
 from src.retriever.reranker_base import BaseReranker
 from src.retriever.reranker_factory import get_reranker
 from src.retriever.retrieval_engine import RetrievalEngine
+from src.services.page_cache import PageCache
 from src.vectordb.base import BaseVectorDB
 from src.vectordb.factory import get_vectordb
 
@@ -46,6 +51,9 @@ class AppContainer:
     _ingestion_service: DocumentIngestionService | None = None
     _requirement_analysis_service: RequirementAnalysisService | None = None
     _test_case_generation_service: TestCaseGenerationService | None = None
+    _mobile_execution_service: MobileExecutionService | None = None
+    _driver_manager: AppiumDriverManager | None = None
+    _page_cache: PageCache | None = None
     _agents: dict[str, ReActAgent] | None = None
 
     def get_embedder(self) -> BaseEmbedder:
@@ -140,26 +148,48 @@ class AppContainer:
 
     def get_test_case_generation_service(self) -> TestCaseGenerationService:
         if self._test_case_generation_service is None:
-            from src.agent.tools.write_test_cases import WriteTestCasesTool
-
-            self._test_case_generation_service = TestCaseGenerationService(
+            workflow = TestCaseGenerationWorkflow.create_default(
                 loader=self.get_loader(),
                 cleaner=self.get_cleaner(),
                 retrieval_engine=self.get_retrieval_engine(),
-                writer_tool=WriteTestCasesTool(llm=self.get_llm()),
                 artifacts=self.get_artifact_repository(),
+                llm=self.get_llm(),
+            )
+            self._test_case_generation_service = TestCaseGenerationService(
+                workflow=workflow,
             )
         return self._test_case_generation_service
 
-    def get_agent(self, profile_name: str = "qa_agent") -> ReActAgent:
+    def get_driver_manager(self) -> AppiumDriverManager:
+        if self._driver_manager is None:
+            self._driver_manager = AppiumDriverManager()
+        return self._driver_manager
+
+    def get_page_cache(self) -> PageCache:
+        if self._page_cache is None:
+            self._page_cache = PageCache()
+        return self._page_cache
+
+    def get_mobile_execution_service(self) -> MobileExecutionService:
+        if self._mobile_execution_service is None:
+            workflow = ExecutionWorkflow(
+                driver_manager=self.get_driver_manager(),
+                page_cache=self.get_page_cache(),
+                artifacts=self.get_artifact_repository(),
+            )
+            self._mobile_execution_service = MobileExecutionService(workflow=workflow)
+        return self._mobile_execution_service
+
+    def get_agent(self, profile_name: str | None = None) -> ReActAgent:
         if self._agents is None:
             self._agents = {}
-        agent = self._agents.get(profile_name)
+        cache_key = profile_name or "__default__"
+        agent = self._agents.get(cache_key)
         if agent is not None:
             return agent
 
         cfg_agent = _resolve_agent_profile(profile_name)
-        raw_tools = cfg_agent.get("tools", ["knowledge_search", "web_search"])
+        raw_tools = cfg_agent.get("tools")
         if OmegaConf.is_config(raw_tools):
             tool_configs = OmegaConf.to_container(raw_tools, resolve=True)
         else:
@@ -168,6 +198,12 @@ class AppContainer:
             self.get_retrieval_engine(),
             tool_configs,
             llm=self.get_llm(),
+            test_case_generation_service=self.get_test_case_generation_service(),
+            mobile_execution_service=self.get_mobile_execution_service(),
+            driver_manager=self.get_driver_manager(),
+            page_cache=self.get_page_cache(),
+            loader=self.get_loader(),
+            cleaner=self.get_cleaner(),
         )
         agent = ReActAgent(
             llm=self.get_llm(),
@@ -176,18 +212,38 @@ class AppContainer:
             max_iterations=int(cfg_agent.get("max_iterations", 10)),
             max_history_tokens=int(cfg_agent.get("max_history_tokens", 4000)),
         )
-        self._agents[profile_name] = agent
+        self._agents[cache_key] = agent
         return agent
 
 
-def _resolve_agent_profile(profile_name: str) -> dict:
+class UnknownAgentProfileError(ValueError):
+    """请求了不存在的 Agent profile。"""
+
+    def __init__(self, profile_name: str, available_profiles: list[str]):
+        self.profile_name = profile_name
+        self.available_profiles = available_profiles
+        available = ", ".join(available_profiles) if available_profiles else "无"
+        super().__init__(
+            f"未知 Agent profile: {profile_name!r}。可用 profile: {available}。"
+        )
+
+
+def _resolve_agent_profile(profile_name: str | None) -> dict:
     cfg = get_config().get("agent", {})
     profiles = cfg.get("profiles")
-    if profiles and profile_name in profiles:
+    available_profiles = sorted(list(profiles.keys())) if profiles else []
+    if not profile_name and profiles and "qa_agent" in profiles:
+        profile_cfg = profiles["qa_agent"]
+        if OmegaConf.is_config(profile_cfg):
+            return OmegaConf.to_container(profile_cfg, resolve=True)
+        return profile_cfg
+    if profile_name and profiles and profile_name in profiles:
         profile_cfg = profiles[profile_name]
         if OmegaConf.is_config(profile_cfg):
             return OmegaConf.to_container(profile_cfg, resolve=True)
         return profile_cfg
+    if profile_name:
+        raise UnknownAgentProfileError(profile_name, available_profiles)
     if OmegaConf.is_config(cfg):
         return OmegaConf.to_container(cfg, resolve=True)
     return cfg

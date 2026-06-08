@@ -1,4 +1,4 @@
-"""Chinese-aware text chunking with jieba sentence boundary detection."""
+"""基于 jieba 句界检测的中文感知文本分块。"""
 
 import re
 import uuid
@@ -19,10 +19,10 @@ class Chunk:
 
 
 class ChineseChunker:
-    """Structure-aware chunker optimized for Chinese text.
+    """面向中文文本优化的结构感知分块器。
 
-    Uses jieba tokenization for sentence boundary detection and respects
-    document structure (headings, paragraphs). Guarantees no sentence is split.
+    使用 jieba 分词辅助句界检测，并尊重文档结构（标题、段落）。
+    保证不会拆开句子。
     """
 
     _SENTENCE_ENDS = re.compile(r"[。！？.!?\n]")
@@ -56,8 +56,8 @@ class ChineseChunker:
         return result
 
     def _split_sentences(self, text: str) -> list[str]:
-        """Split text into sentences using Chinese-aware boundaries."""
-        jieba.setLogLevel(60)  # Suppress jieba debug output
+        """使用中文感知边界将文本切分为句子。"""
+        jieba.setLogLevel(60)  # 抑制 jieba 调试输出
         raw_sentences: list[str] = []
         current = ""
 
@@ -70,7 +70,7 @@ class ChineseChunker:
         if current.strip():
             raw_sentences.append(current.strip())
 
-        # Further split very long "sentences" (likely missing punctuation)
+        # 进一步切分超长“句子”（通常是缺少标点）
         sentences: list[str] = []
         for sent in raw_sentences:
             if len(sent) > self.chunk_size * 1.5:
@@ -93,7 +93,7 @@ class ChineseChunker:
         return sentences
 
     def _merge_sentences(self, sentences: list[str]) -> list[str]:
-        """Merge sentences into chunks respecting size limits."""
+        """在遵守大小限制的前提下将句子合并为分块。"""
         if not sentences:
             return []
 
@@ -106,7 +106,7 @@ class ChineseChunker:
 
             if current_len + sent_len > self.chunk_size and current:
                 chunks.append(current)
-                # Overlap: keep tail of previous chunk
+                # 重叠：保留上一分块的尾部
                 overlap_text = current[-self.chunk_overlap:] if self.chunk_overlap > 0 else ""
                 current = overlap_text + sent
                 current_len = len(current)
@@ -116,7 +116,7 @@ class ChineseChunker:
 
         if current.strip():
             current = current.strip()
-            # Merge into previous chunk if too small
+            # 如果太小，则合并进上一分块
             if current_len < self.min_chunk_size and chunks:
                 chunks[-1] = chunks[-1] + current
             else:

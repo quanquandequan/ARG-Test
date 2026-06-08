@@ -1,29 +1,30 @@
-"""Requirement reviewer tool — quality gate for requirements before test design.
+"""需求评审工具：测试设计前的需求质量门禁。
 
-Takes a RequirementIR (via file path produced by ``requirement_parser``) and
-audits it for:
-  - Ambiguities (vague/unmeasurable statements)
-  - Gaps (missing information test engineers need)
-  - Risks (technical or business risk areas)
+接收 RequirementIR（通过 ``requirement_parser`` 生成的文件路径）并审查：
+  - 歧义（含糊或不可度量的表述）
+  - 缺口（测试工程师所需但缺失的信息）
+  - 风险（技术或业务风险区域）
 
-Outputs a ReviewResult JSON + saves a Markdown review report.
+输出 ReviewResult JSON，并保存 Markdown 评审报告。
 
-Typical workflow:
+典型工作流：
     knowledge_search → requirement_parser → requirement_reviewer
                                                     │
-                                            Reviewer blocks or
-                                          passes to test_point_gen
+                                            评审阻塞或
+                                          放行至 test_point_gen
 """
 
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 
 from src.agent.base_tool import BaseTool
+from src.agent.tool_result import ToolExecutionResult
+from src.application.artifact_repository import LocalArtifactRepository
 from src.core.logging import get_logger
+from src.domain.artifacts import ArtifactKind
 from src.llm.base import BaseLLM
 from src.llm.types import Message
 from src.services.requirement_ir import RequirementIR, ReviewResult
@@ -32,7 +33,7 @@ logger = get_logger(__name__)
 
 _DEFAULT_OUTPUT_DIR = "./outputs/requirement_ir"
 
-# ── LLM prompts ───────────────────────────────────────────────────────────────
+# ── LLM 提示词 ───────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """\
 你是一名资深测试架构师，专注于需求质量评审。
@@ -110,14 +111,14 @@ _USER_TEMPLATE_RAW = """\
 
 
 class RequirementReviewerTool(BaseTool):
-    """Audit a RequirementIR (or raw requirement text) for test-design readiness.
+    """审查 RequirementIR（或原始需求文本）的测试设计就绪度。
 
-    Preferred input: ``ir_file`` (path from ``requirement_parser`` output).
-    Fallback input: ``requirement`` (raw text) when no parser output is available.
+    推荐输入：``ir_file``（来自 ``requirement_parser`` 输出的路径）。
+    兜底输入：无解析结果时使用 ``requirement``（原始文本）。
 
-    Saves:
-      ``<module>_<ts>_review.json``  — ReviewResult (Pydantic-validated)
-      ``<module>_<ts>_review.md``    — human-readable review report
+    保存：
+      ``<module>_<ts>_review.json``  — ReviewResult（已通过 Pydantic 校验）
+      ``<module>_<ts>_review.md``    — 面向人阅读的评审报告
     """
 
     def __init__(
@@ -146,6 +147,7 @@ class RequirementReviewerTool(BaseTool):
         self._system_prompt = (
             system_prompt or cfg.get("system_prompt", "") or _SYSTEM_PROMPT
         )
+        self._artifacts = LocalArtifactRepository(base_dir=str(self._default_output_dir))
 
     @property
     def name(self) -> str:
@@ -175,6 +177,10 @@ class RequirementReviewerTool(BaseTool):
                         "可从上一步工具输出的 [IR_FILE=...] 中提取。"
                     ),
                 },
+                "ir_json": {
+                    "type": "string",
+                    "description": "RequirementIR JSON 字符串（内部复合工具使用）。",
+                },
                 "requirement": {
                     "type": "string",
                     "description": "需求原文（当 ir_file 不可用时作为替代）",
@@ -193,23 +199,51 @@ class RequirementReviewerTool(BaseTool):
     async def execute(
         self,
         ir_file: str = "",
+        ir_json: str = "",
         requirement: str = "",
         module: str = "",
         output_dir: str = "",
         **kwargs,
     ) -> str:
-        if not ir_file.strip() and not requirement.strip():
-            return "错误：请提供 ir_file（IR 文件路径）或 requirement（需求原文）之一。"
+        result = await self.execute_typed(
+            ir_file=ir_file,
+            ir_json=ir_json,
+            requirement=requirement,
+            module=module,
+            output_dir=output_dir,
+            **kwargs,
+        )
+        return result.content
+
+    async def execute_typed(
+        self,
+        ir_file: str = "",
+        ir_json: str = "",
+        requirement: str = "",
+        module: str = "",
+        output_dir: str = "",
+        request_id: str = "",
+        persist: bool = True,
+        **kwargs,
+    ) -> ToolExecutionResult:
+        if not ir_file.strip() and not ir_json.strip() and not requirement.strip():
+            return ToolExecutionResult(
+                content=(
+                    "错误：请提供 ir_file（IR 文件路径）、ir_json 或 "
+                    "requirement（需求原文）之一。"
+                )
+            )
 
         out_dir = (
             Path(output_dir.strip()) if output_dir.strip()
             else self._default_output_dir
         )
-        out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load input
+        # 加载输入
         ir: RequirementIR | None = None
-        if ir_file.strip():
+        if ir_json.strip():
+            ir, module, user_content = self._load_from_ir_json(ir_json.strip(), module)
+        elif ir_file.strip():
             ir, module, user_content = self._load_from_ir_file(
                 ir_file.strip(), module
             )
@@ -219,7 +253,7 @@ class RequirementReviewerTool(BaseTool):
                 requirement=requirement.strip(), module=module
             )
 
-        # Call LLM
+        # 调用 LLM
         messages = [
             Message(role="system", content=self._system_prompt),
             Message(role="user", content=user_content),
@@ -230,7 +264,7 @@ class RequirementReviewerTool(BaseTool):
             max_tokens=self._max_tokens,
         )
 
-        # Parse ReviewResult
+        # 解析 ReviewResult
         review = ReviewResult.from_llm_json(response.content)
         if review is None:
             logger.warning(
@@ -238,20 +272,50 @@ class RequirementReviewerTool(BaseTool):
                 module=module,
                 raw=response.content[:200],
             )
-            return "LLM 未能生成有效的 ReviewResult，请重试。"
+            return ToolExecutionResult(content="LLM 未能生成有效的 ReviewResult，请重试。")
 
-        # Save files
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe = re.sub(r'[\\/:*?"<>|]', "_", module)
-        review_json_path = out_dir / f"{safe}_{ts}_review.json"
-        review_md_path = out_dir / f"{safe}_{ts}_review.md"
+        if not persist:
+            logger.info(
+                "requirement_reviewer_draft_done",
+                module=module,
+                score=review.score,
+                quality=review.overall_quality,
+                ambiguities=len(review.ambiguities),
+                gaps=len(review.gaps),
+            )
+            return ToolExecutionResult(
+                content=_render_review_summary(
+                    review,
+                    module,
+                    report_path="",
+                    include_gate=True,
+                    draft=True,
+                ),
+                data=review,
+                metadata={
+                    "request_id": request_id,
+                    "analysis_status": "draft",
+                    "persisted": False,
+                },
+            )
 
-        review_json_path.write_text(
-            review.model_dump_json(indent=2), encoding="utf-8"
+        metadata = _build_request_metadata(request_id)
+        review_json_artifact = self._artifacts.save_json(
+            ArtifactKind.REQUIREMENT_REVIEW_JSON,
+            module,
+            review.model_dump(),
+            metadata=metadata,
+            suffix="review",
+            directory=out_dir,
         )
-        review_md_path.write_text(
+        review_md_artifact = self._artifacts.save_text(
+            ArtifactKind.REQUIREMENT_REVIEW_MARKDOWN,
+            module,
             _render_review_markdown(review, module, ir),
-            encoding="utf-8",
+            extension=".md",
+            metadata=metadata,
+            suffix="review",
+            directory=out_dir,
         )
 
         logger.info(
@@ -263,60 +327,28 @@ class RequirementReviewerTool(BaseTool):
             gaps=len(review.gaps),
         )
 
-        lines = [
-            f"需求评审完成：{module}",
-            "",
-            f"评审报告：{review_md_path.resolve()}",
-            "",
-            review.to_compact_summary(),
-            "",
-        ]
+        return ToolExecutionResult(
+            content=_render_review_summary(
+                review,
+                module,
+                report_path=str(review_md_artifact.path),
+                include_gate=True,
+                draft=False,
+            ),
+            data=review,
+            artifacts=[review_json_artifact, review_md_artifact],
+            metadata={
+                "request_id": request_id,
+                "output_dir": str(out_dir.resolve()),
+            },
+        )
 
-        if review.ambiguities:
-            lines += ["歧义问题："]
-            for a in review.ambiguities[:5]:
-                lines.append(f"  [{a.id}@{a.location}] {a.description}")
-            if len(review.ambiguities) > 5:
-                lines.append(f"  ...共 {len(review.ambiguities)} 条，详见报告")
-            lines.append("")
-
-        if review.gaps:
-            lines += ["信息缺口（需向产品确认）："]
-            for g in review.gaps[:3]:
-                lines.append(f"  [{g.id}] {g.question}")
-            lines.append("")
-
-        high_risks = [r for r in review.risks if r.level == "high"]
-        if high_risks:
-            lines += ["高风险区域："]
-            for r in high_risks:
-                lines.append(f"  [{r.area}] {r.description}")
-            lines.append("")
-
-        if review.suggestions:
-            lines += ["改进建议："]
-            for s in review.suggestions[:3]:
-                lines.append(f"  - {s}")
-            lines.append("")
-
-        # Quality gate hint
-        if review.score < 70:
-            lines.append(
-                "⚠️ 质量评分低于 70，建议先澄清歧义和填补缺口，再进行测试设计。"
-            )
-        elif review.score >= 85:
-            lines.append("✅ 需求质量良好，可以开始测试点生成（test_point_generator）。")
-        else:
-            lines.append("⚠️ 建议澄清部分问题后再进行测试设计。")
-
-        return "\n".join(lines)
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── 辅助方法 ─────────────────────────────────────────────────────────────
 
     def _load_from_ir_file(
         self, ir_file: str, module: str
     ) -> tuple[RequirementIR | None, str, str]:
-        """Load IR from file and build user message. Returns (ir, module, content)."""
+        """从文件加载 IR 并构建用户消息，返回 (ir, module, content)。"""
         path = Path(ir_file)
         if not path.exists():
             raise FileNotFoundError(f"IR 文件不存在：{ir_file}")
@@ -325,7 +357,7 @@ class RequirementReviewerTool(BaseTool):
         try:
             ir = RequirementIR.model_validate_json(raw)
             resolved_module = module.strip() or ir.module
-            # Compact IR for LLM (skip metadata fields)
+            # 为 LLM 压缩 IR（跳过元数据字段）
             ir_for_llm = ir.model_dump(
                 exclude={"version", "generated_at", "source_length", "has_kb_context"}
             )
@@ -335,15 +367,98 @@ class RequirementReviewerTool(BaseTool):
             )
             return ir, resolved_module, content
         except Exception:
-            # Fallback: treat as raw text
+            # 兜底：按原始文本处理
             resolved_module = module.strip() or "需求评审"
             content = _USER_TEMPLATE_RAW.format(
                 requirement=raw, module=resolved_module
             )
             return None, resolved_module, content
 
+    def _load_from_ir_json(
+        self,
+        ir_json: str,
+        module: str,
+    ) -> tuple[RequirementIR | None, str, str]:
+        """从内存中的 IR JSON 构建评审消息。"""
+        try:
+            ir = RequirementIR.model_validate_json(ir_json)
+            resolved_module = module.strip() or ir.module
+            ir_for_llm = ir.model_dump(
+                exclude={"version", "generated_at", "source_length", "has_kb_context"}
+            )
+            content = _USER_TEMPLATE_WITH_IR.format(
+                ir_json=json.dumps(ir_for_llm, ensure_ascii=False, indent=2),
+                module=resolved_module,
+            )
+            return ir, resolved_module, content
+        except Exception:
+            resolved_module = module.strip() or "需求评审"
+            content = _USER_TEMPLATE_RAW.format(
+                requirement=ir_json,
+                module=resolved_module,
+            )
+            return None, resolved_module, content
 
-# ── Markdown renderer ─────────────────────────────────────────────────────────
+
+# ── Markdown 渲染器 ──────────────────────────────────────────────────────────
+
+def _render_review_summary(
+    review: ReviewResult,
+    module: str,
+    *,
+    report_path: str = "",
+    include_gate: bool = True,
+    draft: bool = False,
+) -> str:
+    """渲染评审结果摘要；draft 模式不包含落盘路径。"""
+    title = "需求评审草稿完成" if draft else "需求评审完成"
+    lines = [
+        f"{title}：{module}",
+        "",
+    ]
+    if report_path:
+        lines += [f"评审报告：{report_path}", ""]
+    lines += [review.to_compact_summary(), ""]
+
+    if review.ambiguities:
+        lines += ["歧义问题："]
+        for ambiguity in review.ambiguities[:5]:
+            lines.append(
+                f"  [{ambiguity.id}@{ambiguity.location}] {ambiguity.description}"
+            )
+        if len(review.ambiguities) > 5:
+            lines.append(f"  ...共 {len(review.ambiguities)} 条，详见报告")
+        lines.append("")
+
+    if review.gaps:
+        lines += ["信息缺口（需向产品确认）："]
+        for gap in review.gaps[:3]:
+            lines.append(f"  [{gap.id}] {gap.question}")
+        lines.append("")
+
+    high_risks = [risk for risk in review.risks if risk.level == "high"]
+    if high_risks:
+        lines += ["高风险区域："]
+        for risk in high_risks:
+            lines.append(f"  [{risk.area}] {risk.description}")
+        lines.append("")
+
+    if review.suggestions:
+        lines += ["改进建议："]
+        for suggestion in review.suggestions[:3]:
+            lines.append(f"  - {suggestion}")
+        lines.append("")
+
+    if include_gate:
+        if review.score < 70:
+            lines.append("⚠️ 质量评分低于 70，建议先澄清歧义和填补缺口。")
+        elif review.score >= 85:
+            lines.append("✅ 需求质量良好，但仍需确认是否直接生成最终 JSON。")
+        else:
+            lines.append("⚠️ 建议澄清部分问题后再生成最终 JSON。")
+
+    return "\n".join(lines)
+
 
 def _render_review_markdown(
     review: ReviewResult,
@@ -426,3 +541,10 @@ def _render_review_markdown(
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _build_request_metadata(request_id: str) -> dict:
+    metadata: dict[str, str] = {}
+    if request_id:
+        metadata["request_id"] = request_id
+    return metadata

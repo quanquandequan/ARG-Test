@@ -1,14 +1,14 @@
-"""Qwen Vision Language Model provider for screen understanding.
+"""用于屏幕理解的 Qwen Vision Language Model provider。
 
-Used exclusively by ``screen_tool`` to interpret Android screenshots when
-the Appium XML tree lacks sufficient semantic information.
+仅供 ``screen_tool`` 使用：当 Appium XML 树缺少足够语义信息时，
+用于解读 Android 截图。
 
-This provider is intentionally minimal — it only supports image description,
-not general LLM tool-calling.  The main Agent continues to use DeepSeek/OpenAI.
+该 provider 有意保持最小化，只支持图像描述，不支持通用 LLM 工具调用。
+主 Agent 仍继续使用 DeepSeek/OpenAI。
 
 API: DashScope OpenAI-compatible endpoint
-Model: configurable via ``qwen_vision.model`` in default.yaml
-       (default: "qwen-vl-plus")
+Model: 可通过 default.yaml 中的 ``qwen_vision.model`` 配置
+       （默认："qwen-vl-plus"）
 """
 
 from __future__ import annotations
@@ -51,14 +51,13 @@ _DEFAULT_SCREEN_PROMPT = """\
 
 
 class QwenVisionProvider:
-    """Qwen VL provider for Android screen description.
+    """用于 Android 屏幕描述的 Qwen VL provider。
 
-    Accepts screenshots as file paths or base64-encoded strings and returns
-    a structured description of visible UI elements.
+    接收文件路径或 base64 编码字符串形式的截图，返回可见 UI 元素的结构化描述。
 
-    Configuration (``configs/default.yaml`` → ``qwen_vision``):
-      model:   model name (default: "qwen-vl-plus")
-      api_key: API key (default: env DASHSCOPE_API_KEY)
+    配置（``configs/default.yaml`` → ``qwen_vision``）：
+      model:   模型名称（默认："qwen-vl-plus"）
+      api_key: API key（默认读取环境变量 DASHSCOPE_API_KEY）
     """
 
     def __init__(
@@ -101,7 +100,7 @@ class QwenVisionProvider:
         return self._client
 
     def is_available(self) -> bool:
-        """Return True if the API key is configured."""
+        """API key 已配置时返回 True。"""
         return bool(self._api_key)
 
     async def describe_screen(
@@ -109,14 +108,14 @@ class QwenVisionProvider:
         screenshot: str | bytes | Path,
         prompt: str | None = None,
     ) -> str:
-        """Describe a screenshot using Qwen VL.
+        """使用 Qwen VL 描述截图。
 
         Args:
-            screenshot: Base64 string, raw bytes, or file path to the image.
-            prompt: Custom prompt. Defaults to the structured JSON prompt.
+            screenshot: 图片的 base64 字符串、原始字节或文件路径。
+            prompt: 自定义 prompt；默认使用结构化 JSON prompt。
 
         Returns:
-            LLM text response (ideally JSON matching the schema above).
+            LLM 文本响应（理想情况下为匹配上方 schema 的 JSON）。
         """
         image_base64 = _to_base64(screenshot)
         used_prompt = prompt or self._screen_prompt
@@ -153,14 +152,14 @@ class QwenVisionProvider:
         screenshot: str | bytes | Path,
         question: str,
     ) -> str:
-        """Ask a free-form question about a screenshot."""
+        """针对截图提出自由格式问题。"""
         return await self.describe_screen(screenshot, prompt=question)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── 辅助方法 ─────────────────────────────────────────────────────────────────
 
 def _to_base64(image: str | bytes | Path) -> str:
-    """Convert image to base64 string regardless of input format."""
+    """无论输入格式如何，都转换为 base64 字符串。"""
     is_path = isinstance(image, Path) or (
         isinstance(image, str) and len(image) < 500 and "\n" not in image
     )
@@ -170,5 +169,5 @@ def _to_base64(image: str | bytes | Path) -> str:
             return base64.b64encode(path.read_bytes()).decode()
     if isinstance(image, bytes):
         return base64.b64encode(image).decode()
-    # Already a base64 string
+    # 已经是 base64 字符串
     return image

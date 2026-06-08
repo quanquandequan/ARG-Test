@@ -1,4 +1,4 @@
-"""API tests for /health and /health/ready."""
+"""/health 与 /health/ready 的 API 测试。"""
 
 
 def test_health_returns_ok(client):

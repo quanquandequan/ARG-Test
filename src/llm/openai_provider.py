@@ -1,4 +1,4 @@
-"""OpenAI-compatible API provider — works with OpenAI, DeepSeek, DashScope, etc."""
+"""OpenAI 兼容 API provider，适用于 OpenAI、DeepSeek、DashScope 等。"""
 
 import json
 import os
@@ -36,10 +36,10 @@ class OpenAIProvider(BaseLLM):
             self._client = AsyncOpenAI(**kwargs)
         return self._client
 
-    # -- Message / tool format conversion --
+    # -- 消息 / 工具格式转换 --
 
     def _messages_to_openai(self, messages: list[Message]) -> list[dict]:
-        """Convert internal Message list to OpenAI API format."""
+        """将内部 Message 列表转换为 OpenAI API 格式。"""
         converted: list[dict] = []
         for msg in messages:
             entry: dict = {"role": msg.role}
@@ -114,7 +114,7 @@ class OpenAIProvider(BaseLLM):
             },
         )
 
-    # -- Shared request preparation --
+    # -- 共享请求准备 --
 
     def _build_request_kwargs(
         self,
@@ -125,7 +125,7 @@ class OpenAIProvider(BaseLLM):
         max_tokens: int | None,
         stream: bool = False,
     ) -> dict:
-        """Build the kwargs dict for client.chat.completions.create()."""
+        """构建传给 client.chat.completions.create() 的 kwargs 字典。"""
         cfg = get_config().get("llm", {})
         temperature = temperature if temperature is not None else cfg.get("temperature", 0.3)
         max_tokens = max_tokens or cfg.get("max_tokens", 4096)
@@ -156,7 +156,7 @@ class OpenAIProvider(BaseLLM):
 
         return kwargs
 
-    # -- Agent interface --
+    # -- Agent 接口 --
 
     async def generate_chat(
         self,

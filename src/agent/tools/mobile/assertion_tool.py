@@ -1,16 +1,15 @@
-"""AssertionTool — verify UI state after test steps.
+"""AssertionTool：在测试步骤后验证 UI 状态。
 
-Assertions do NOT modify the device state and do NOT invalidate the cache.
-They return a pass/fail result with a descriptive message the Agent can
-include in the test execution report.
+断言不会修改设备状态，也不会使缓存失效。
+它们会返回 pass/fail 结果以及描述性消息，供 Agent 纳入测试执行报告。
 
-Supported actions:
-  assert_text           Text is visible somewhere on the current screen
-  assert_not_text       Text is NOT visible (negative assertion)
-  assert_element        Element identified by text/id/desc exists and is visible
-  assert_clickable      Element is visible AND clickable
-  assert_page           Current activity matches the expected page/activity name
-  assert_checked        Checkbox / radio button is in checked state
+支持的操作：
+  assert_text           当前屏幕中可见指定文字
+  assert_not_text       当前屏幕中不可见指定文字（反向断言）
+  assert_element        按 text/id/desc 识别的元素存在且可见
+  assert_clickable      元素可见且可点击
+  assert_page           当前 activity 匹配预期页面 / activity 名称
+  assert_checked        复选框 / 单选按钮处于选中状态
 """
 
 from __future__ import annotations
@@ -76,7 +75,7 @@ class AssertionTool(BaseTool):
     def __init__(self, driver_manager: AppiumDriverManager) -> None:
         self._mgr = driver_manager
 
-    # ── Entry point ───────────────────────────────────────────────────────────
+    # ── 入口 ─────────────────────────────────────────────────────────────────
 
     async def execute(self, action: str = "", **kwargs) -> str:  # type: ignore[override]
         if not self._mgr.is_connected():
@@ -103,7 +102,7 @@ class AssertionTool(BaseTool):
             "assert_clickable / assert_page / assert_checked"
         )
 
-    # ── Assertions ────────────────────────────────────────────────────────────
+    # ── 断言 ─────────────────────────────────────────────────────────────────
 
     async def _get_parsed(self):
         return await self._mgr.get_parsed_screen()
@@ -111,7 +110,7 @@ class AssertionTool(BaseTool):
     async def _resolve_target(
         self, parsed, element_id: str = "", element_text: str = ""
     ):
-        """Shared element lookup: try resource-id first, then fuzzy text."""
+        """共享元素查找：先尝试 resource-id，再尝试模糊文本匹配。"""
         el = None
         if element_id:
             el = parsed.find_by_resource_id(element_id)

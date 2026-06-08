@@ -1,23 +1,23 @@
-"""ScreenTool — hybrid screen analysis (XML tree primary, Qwen VL fallback).
+"""ScreenTool：混合屏幕分析（优先 XML 树，Qwen VL 兜底）。
 
-Strategy (XML-first):
-  1. Fetch page_source XML from Appium.
-  2. Check PageCache — return cached result if page structure is unchanged.
-  3. Parse XML into a structured element list.
-  4. Decide if XML is "sufficient":
-       - ANY clickable/focusable element exists  → XML is sufficient
-       - OR text/content-desc count >= threshold → XML is sufficient
-       (threshold configurable via mobile.vlm_fallback_min_text_elements in YAML,
-        default 1 — VLM fires only when XML is truly empty)
-  5. If sufficient  → return XML result directly (no screenshot taken).
-  6. If insufficient (or force_vlm=true) → take screenshot, call Qwen VL,
-     return VLM description alongside whatever XML elements were found.
-  7. Cache the result.
+策略（XML 优先）：
+  1. 从 Appium 获取 page_source XML。
+  2. 检查 PageCache；若页面结构未变，则返回缓存结果。
+  3. 将 XML 解析为结构化元素列表。
+  4. 判断 XML 是否“足够”：
+       - 存在任意 clickable/focusable 元素，则 XML 足够；
+       - 或 text/content-desc 数量达到阈值，则 XML 足够。
+       阈值可通过 YAML 中的 mobile.vlm_fallback_min_text_elements 配置，
+       默认 1，即只有 XML 真的很空时才触发 VLM。
+  5. 若足够，则直接返回 XML 结果（不截图）。
+  6. 若不足（或 force_vlm=true），则截图并调用 Qwen VL，
+     将 VLM 描述与已找到的 XML 元素一并返回。
+  7. 缓存结果。
 
-Supported actions:
-  get_current_screen   XML-first hybrid analysis of the current screen.
-  get_screenshot       Take and save a screenshot (returns file path).
-  get_ui_tree          Return the raw XML element list (never calls VLM).
+支持的操作：
+  get_current_screen   对当前屏幕执行 XML 优先的混合分析。
+  get_screenshot       截图并保存（返回文件路径）。
+  get_ui_tree          返回原始 XML 元素列表（绝不调用 VLM）。
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class ScreenTool(BaseTool):
         self._cache = page_cache
         self._vlm = vlm
 
-    # ── Entry point ───────────────────────────────────────────────────────────
+    # ── 入口 ─────────────────────────────────────────────────────────────────
 
     async def execute(  # type: ignore[override]
         self,
@@ -94,10 +94,10 @@ class ScreenTool(BaseTool):
 
         return f"未知操作：{action}。支持：get_current_screen / get_screenshot / get_ui_tree"
 
-    # ── Actions ───────────────────────────────────────────────────────────────
+    # ── 操作 ─────────────────────────────────────────────────────────────────
 
     async def _get_current_screen(self, force_vlm: bool = False) -> str:
-        """Hybrid screen analysis — XML primary, VLM fallback."""
+        """混合屏幕分析：优先 XML，VLM 兜底。"""
         if not self._mgr.is_connected():
             return "错误：设备未连接，请先调用 device_tool action=connect。"
 
@@ -106,7 +106,7 @@ class ScreenTool(BaseTool):
         except Exception as e:
             err = str(e)
             if "terminated" in err or "not started" in err or "session" in err.lower():
-                await self._mgr.disconnect()  # calls quit() + sets _driver=None cleanly
+                await self._mgr.disconnect()  # 调用 quit() 并干净地设置 _driver=None
                 return (
                     "Appium 会话已失效（超时或服务重启）。"
                     "请调用 device_tool action=connect 重新建立连接，再继续操作。"
@@ -116,7 +116,7 @@ class ScreenTool(BaseTool):
         page_hash = compute_structure_hash(xml)
         activity = await self._mgr.get_current_activity()
 
-        # Cache hit
+        # 命中缓存
         cached = self._cache.get(page_hash)
         if cached and not force_vlm:
             logger.debug("screen_cache_hit", page_hash=page_hash)
@@ -127,14 +127,14 @@ class ScreenTool(BaseTool):
                 vlm_description=None,
             )
 
-        # Parse XML
+        # 解析 XML
         parsed = parse_page_source(xml)
 
         vlm_description: str | None = None
         source = "xml"
 
-        # ── VLM fallback decision (XML-first) ─────────────────────────────────
-        # Read threshold from YAML; 0 means "always trust XML, never auto-fire".
+        # ── VLM 兜底决策（XML 优先）──────────────────────────────────────────
+        # 从 YAML 读取阈值；0 表示“始终信任 XML，绝不自动触发”。
         cfg_mobile = get_config().get("mobile", {})
         min_text = int(cfg_mobile.get("vlm_fallback_min_text_elements", 1))
         xml_sufficient = parsed.has_meaningful_content(min_text_elements=min_text)
@@ -161,7 +161,7 @@ class ScreenTool(BaseTool):
                 clickable=len(parsed.clickable_elements()),
             )
 
-        # Cache the result (without screenshot for memory efficiency)
+        # 缓存结果（不保存截图，节省内存）
         self._cache.put(
             page_hash=page_hash,
             parsed_screen=parsed,
@@ -210,7 +210,7 @@ class ScreenTool(BaseTool):
         )
 
 
-# ── Formatting ────────────────────────────────────────────────────────────────
+# ── 格式化 ───────────────────────────────────────────────────────────────────
 
 def _format_screen_result(
     parsed: ParsedScreen,

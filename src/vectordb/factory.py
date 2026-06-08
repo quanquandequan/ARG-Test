@@ -1,4 +1,4 @@
-"""VectorDB factory — config-driven instantiation."""
+"""VectorDB 工厂：按配置驱动实例化。"""
 
 from src.core.config import get_config
 from src.vectordb.base import BaseVectorDB

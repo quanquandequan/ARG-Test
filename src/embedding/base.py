@@ -1,4 +1,4 @@
-"""Abstract base class for embedding models."""
+"""Embedding 模型抽象基类。"""
 
 from abc import ABC, abstractmethod
 
@@ -8,25 +8,25 @@ import numpy as np
 class BaseEmbedder(ABC):
     @abstractmethod
     def embed_documents(self, texts: list[str]) -> np.ndarray:
-        """Embed a batch of documents. Returns (N, dim) float32 array."""
+        """对一批文档做 embedding，返回 (N, dim) float32 数组。"""
         ...
 
     @abstractmethod
     def embed_query(self, query: str) -> np.ndarray:
-        """Embed a single query. Returns (dim,) float32 array."""
+        """对单个 query 做 embedding，返回 (dim,) float32 数组。"""
         ...
 
     @abstractmethod
     def dim(self) -> int:
-        """Return embedding dimension."""
+        """返回 embedding 维度。"""
         ...
 
     @abstractmethod
     def load(self) -> None:
-        """Load the model into memory (lazy initialization)."""
+        """将模型加载到内存（延迟初始化）。"""
         ...
 
     @abstractmethod
     def is_loaded(self) -> bool:
-        """Check if model is loaded."""
+        """检查模型是否已加载。"""
         ...

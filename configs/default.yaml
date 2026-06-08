@@ -1,5 +1,5 @@
-# RAG Pipeline — Default Configuration
-# Values here apply to all environments.
+# RAG Pipeline 默认配置
+# 这里的值适用于所有环境。
 
 app:
   name: "rag-pipeline"
@@ -14,14 +14,14 @@ embedding:
   dim: 1024
   device: "cpu"
   normalize: true
-  batch_size: 10          # DashScope limit is 10 per request
+  batch_size: 10          # DashScope 每次请求限制为 10 条
   use_onnx: false
   onnx_model_path: null
 
 chunking:
   strategy: "chinese_aware"
-  chunk_size: 512        # characters
-  chunk_overlap: 100     # characters
+  chunk_size: 512        # 字符数
+  chunk_overlap: 100     # 字符数
   min_chunk_size: 50
 
 vectordb:
@@ -38,13 +38,13 @@ vectordb:
     nlist: 128
 
 retrieval:
-  top_k: 20             # Initial recall from vector search
-  final_k: 5            # After reranking
+  top_k: 20             # 向量搜索初始召回数
+  final_k: 5            # 重排后的最终数量
   similarity_threshold: 0.3
 
 reranker:
   provider: "dashscope"    # "bge_reranker" (local) / "openai" / "dashscope"
-  # Model names per provider (only the relevant one is read at runtime):
+  # 各 provider 的模型名（运行时只读取相关项）：
   #   bge_reranker  →  bge_model: "BAAI/bge-reranker-v2-m3"
   #   openai        →  model:     "gpt-4o-mini"
   #   dashscope     →  model:     "qwen3-rerank"
@@ -66,275 +66,37 @@ artifacts:
 # ── Agent 配置 ────────────────────────────────────────────────────────────────
 agent:
   max_iterations: 10
-  max_history_tokens: 4000   # sliding-window token budget for conversation history
+  max_history_tokens: 4000   # 对话历史滑动窗口 token 预算
 
   # Agent 总系统 Prompt
   # 定义角色、信息来源优先级、工作流程和回答规则。
-  # 工具的具体调用时机说明写在下方各工具的 description 字段，保持此处简洁。
+  # 具体工具说明由各 Tool 的内置 description 决定。
   system_prompt: |
-    你是一个专注于软件测试的 AI 助手，帮助测试人员查询信息、分析问题、生成测试用例。
+    你是一个专注于软件测试的 AI 助手，负责知识查询、需求分析、测试用例设计和自动化场景执行。
 
     ## 信息来源优先级
     每个文档片段会标注来源文件名，请据此判断权威性：
-    - **ACN_cases.xlsx**：主要来源，包含叭嗒 app 现有功能的测试用例，为产品逻辑的权威定义。
+    - **当前用户上传/输入的需求文档**：生成需求图谱和测试用例时的最高优先级事实来源。
+    - **ACN_cases.xlsx**：包含叭嗒 app 现有功能的测试用例；在新需求生成场景中仅作为历史背景、格式样本和回归风险参考。
     - **ACN_buglist.xlsx**：缺陷记录，反映已知问题和历史 Bug，用于辅助判断。
     - **以"叭嗒"开头的 .xmind 文件**：历史测试用例，与现有逻辑可能不一致，仅作背景参考。
     - **包含"插件"、"基线"的 .xmind 文件**：漫画插件和基线测试的背景。
     - **包含"小程序"的 .xmind 文件**：漫画小程序测试用例的背景。
     - **其他 .xmind 文件**：辅助参考。
-    当不同来源信息冲突时，按以上优先级采纳。
+    当不同来源信息冲突时，按以上优先级采纳。若正在解析或生成新需求产物，必须以当前需求文档为准；知识库冲突内容只能作为风险或待澄清项，不能写成新功能事实。
 
     ## 工作流程
-    1. 分析用户问题，判断需要哪些工具
-    2. 优先调用 knowledge_search 搜索知识库（获取背景或格式参考）
-    3. 知识库无法满足时，可尝试 web_search
-    4. 需求结构化分析：knowledge_search → requirement_parser → requirement_reviewer
-    5. 生成测试用例（快速）：knowledge_search → write_test_cases
-    6. 需求分析报告（人工阅读）：knowledge_search → analyze_requirements
-    7. 综合所有信息给出完整回答
+    1. 优先选择最贴近目标的高阶工具，不直接暴露内部管道细节
+    2. 知识查询统一走 search_knowledge，由工具内部决定是否补充网页搜索
+    3. 需求分析统一走 analyze_requirement
+    4. 测试用例设计统一走 design_test_cases
+    5. 自动化执行统一走 execute_scenario
+    6. 综合工具结果给出完整回答
 
     ## 回答规则
     - 使用中文回答
     - 引用信息来源，格式为 [1]、[2]
     - 所有工具都无法回答时，明确说明"根据目前的信息无法回答"
-
-  # 工具列表
-  # 每个工具支持两个可选字段：
-  #   description   — 展示给 Agent（主 LLM）的工具说明，决定"何时调用该工具"。
-  #                   省略时使用代码内置的默认说明。
-  #   system_prompt — 仅 LLM-powered 工具（write_test_cases）需要。
-  #                   工具内部独立调用 LLM 时的提示词，与 Agent 对话上下文完全隔离。
-  #                   省略时按优先级依次查找：test_generator.system_prompt → 代码默认值。
-  tools:
-    - name: knowledge_search
-      description: |
-        在知识库中搜索文档内容（测试用例、缺陷记录、功能说明等）。
-
-        适用场景：
-        - 查询某功能的现有测试用例
-        - 了解历史缺陷分布和已知问题
-        - 获取测试用例格式、模板和字段定义（生成新用例前必须先调用此工具）
-
-        搜索技巧：使用"功能名 + 测试用例"格式，如"登录 测试用例"、"支付 异常用例"。
-        返回带来源编号 [1][2] 的文档片段。
-
-    - name: web_search
-      description: |
-        搜索互联网获取实时信息（尽力而为，不保证可用）。
-
-        仅在以下情况使用：
-        - 知识库中找不到所需信息
-        - 需要最新的技术文档或行业标准
-
-        注意：知识库是第一优先级，本工具为补充手段。
-
-    # ── Mobile UI Automation tools ────────────────────────────────────────
-    # Uncomment to enable Android automation (requires Appium + mobile extras).
-    # The four tools must always be enabled together; device_tool must run first.
-    - name: device_tool
-      description: |
-        管理 Android 设备的 Appium 测试会话。在所有 UI 操作前必须先调用 connect 建立连接。
-        支持：connect、disconnect、list_devices、launch_app、install_app。
-    
-    - name: screen_tool
-      description: |
-        获取当前 Android 屏幕状态。优先使用 Appium XML 树，信息不足时自动调用 Qwen VL 截图识别。
-        action=get_current_screen 返回结构化元素；action=get_screenshot 保存截图。
-    
-    - name: action_tool
-      description: |
-        在 Android 设备上执行 UI 手势：tap（点击）、input_text（输入）、swipe（滑动）、
-        scroll（滚动）、back（返回）等。操作后自动失效屏幕缓存。
-    
-    - name: assertion_tool
-      description: |
-        验证 Android 页面 UI 状态，返回 PASS/FAIL 结果。
-        支持：assert_text、assert_not_text、assert_element、assert_clickable、assert_page、assert_checked。
-
-    # ── Requirement Domain ────────────────────────────────────────────────
-    - name: requirement_parser
-      description: |
-        将需求文档解析为结构化 RequirementIR（需求中间表示）。
-        输出字段：功能点（含验收标准/测试提示）、业务规则（IF/THEN）、状态机、数据实体。
-        返回 [IR_FILE=路径]，供 requirement_reviewer 和 test_point_generator 使用。
-
-        调用规范：先 knowledge_search 获取背景，再传入 kb_context。
-        适用：需要精确结构化数据、准备进入测试设计流程时使用。
-
-      system_prompt: |
-        你是一名资深软件测试工程师，专注于需求结构化解析。
-        你的任务是将需求文档转换为 RequirementIR（需求中间表示），以 JSON 格式输出。
-
-        ## 输出格式（严格遵守）
-        只输出 JSON 对象，不加 Markdown 标记。
-
-        JSON 结构：
-        {
-          "module": "模块名",
-          "summary": "核心描述（30字以内）",
-          "actors": [{"name": "角色名", "role": "职责"}],
-          "features": [
-            {
-              "id": "F001", "name": "功能名", "description": "描述",
-              "priority": "P0/P1/P2",
-              "acceptance_criteria": ["具体可测量的验收标准"],
-              "test_hints": ["边界/异常/权限/回归场景提示"],
-              "dependencies": ["F002"]
-            }
-          ],
-          "business_rules": [
-            {"id": "R001", "description": "简述", "condition": "IF...", "outcome": "THEN...", "related_features": ["F001"]}
-          ],
-          "state_machines": [
-            {
-              "entity": "实体名", "states": ["A","B"], "initial_state": "A",
-              "transitions": [{"from_state": "A", "to_state": "B", "trigger": "事件", "guard": ""}]
-            }
-          ],
-          "data_entities": [
-            {"name": "实体名", "fields": [{"name": "字段", "field_type": "string", "constraints": ["max_length=20"], "required": true}]}
-          ],
-          "out_of_scope": ["范围外内容"]
-        }
-
-        ## 原则
-        - acceptance_criteria：具体可验证，避免"正常显示"等模糊描述
-        - test_hints：直接提供边界值、异常场景、权限场景、回归风险提示
-        - business_rules：系统强制约束，IF/THEN 格式
-        - 结合知识库背景，在 test_hints 中标注变更点
-
-    - name: requirement_reviewer
-      description: |
-        对 RequirementIR（或需求原文）进行质量评审，识别歧义、缺口、风险。
-        输出质量评分（0-100）和审查报告。
-
-        调用规范：
-        - 从上一步 requirement_parser 的输出中提取 [IR_FILE=路径] 作为 ir_file 参数
-        - 质量评分 < 70：先澄清问题，再进行测试设计
-        - 质量评分 ≥ 85：可直接进行测试设计
-
-      system_prompt: |
-        你是一名资深测试架构师，专注于需求质量评审。
-        识别歧义、信息缺口和风险，以 JSON 格式输出评审结果。
-
-        输出格式（严格遵守，只输出 JSON 对象）：
-        {
-          "overall_quality": "good | needs_clarification | poor",
-          "score": 85,
-          "ambiguities": [
-            {"id": "A001", "location": "F001", "description": "歧义描述", "suggestion": "澄清建议"}
-          ],
-          "gaps": [
-            {"id": "G001", "description": "缺口描述", "impact": "对测试的影响", "question": "待确认的具体问题？"}
-          ],
-          "risks": [
-            {"area": "区域", "level": "high/medium/low", "description": "描述", "mitigation": "应对策略"}
-          ],
-          "suggestions": ["改进建议1"]
-        }
-
-        评分：good=80-100，needs_clarification=50-79，poor=0-49
-        重点检查：验收标准可测性、错误场景覆盖、权限明确性、状态转换完整性、字段约束完整性
-
-    - name: analyze_requirements
-      description: |
-        对需求文档进行测试视角分析，生成结构化 RequirementGraph（需求图谱）。
-        包含：功能点拆解（含优先级/风险等级/边界条件）、状态转换图、
-        风险点、待澄清问题、测试策略建议。
-        输出 JSON（机器可读）+ Markdown（可读报告）两个文件。
-
-        调用规范：调用前先用 knowledge_search 获取背景信息
-        - 叭嗒 app 功能：搜索 "功能名 测试用例"（了解现有功能逻辑）
-        - 插件/基线/小程序功能：搜索 "功能名 xmind"
-        - 将搜索结果传入 kb_context 参数
-
-        典型流程：analyze_requirements → write_test_cases（利用功能点列表生成用例）
-
-      # analyze_requirements 工具内部调用 LLM 时的提示词。
-      # 变量：{kb_section}=知识库背景, {requirement}=需求文档, {module}=模块名
-      system_prompt: |
-        你是一名资深软件测试工程师，专注于从测试视角分析需求文档。
-        你的任务是将需求文档解析为结构化的 RequirementGraph（需求图谱），以 JSON 格式输出。
-
-        ## 输出格式（严格遵守）
-        只输出 JSON 对象，不加任何 Markdown 标记或解释文字。
-
-        JSON 结构：
-          {
-            "summary": "一句话描述核心功能（30字以内）",
-            "actors": ["参与角色"],
-            "features": [
-              {
-                "id": "F001", "name": "功能名", "description": "描述",
-                "priority": "P0/P1/P2",
-                "risk_level": "high/medium/low",
-                "risk_reason": "高风险时必填",
-                "boundaries": ["边界条件"],
-                "test_focus": ["测试重点"],
-                "dependencies": ["F002"]
-              }
-            ],
-            "state_transitions": [
-              {
-                "entity": "实体名", "states": ["状态A", "状态B"],
-                "transitions": [{"from": "A", "to": "B", "trigger": "事件", "condition": "前提"}]
-              }
-            ],
-            "risks": [{"area": "区域", "level": "high/medium/low", "description": "描述", "suggestion": "建议"}],
-            "clarifications": [{"id": "Q001", "question": "问题?", "context": "背景", "impact": "影响"}],
-            "test_strategy": {"scope": "范围", "focus_areas": ["重点"], "exclusions": [], "suggestion": "建议"}
-          }
-
-        ## 分析原则
-        - features：每个独立的用户操作或系统行为拆为一个 feature
-        - risk_level: high=安全/权限/并发/金融，medium=一般功能，low=纯展示
-        - 结合知识库背景，重点标注变更点和潜在回归风险
-        - clarifications：需求模糊/缺失/矛盾之处，列出具体问题
-        - risks：至少2个，按 level 降序
-
-    - name: write_test_cases
-      description: |
-        根据需求文档内容生成完整测试用例，保存为 Excel 文件并返回文件路径。
-
-        调用规范（必须遵守）：
-        1. 先调用 knowledge_search 搜索"测试用例 格式 模板"，获取现有用例样本
-        2. 将搜索结果传入 kb_samples 参数，用于对齐格式和描述风格
-        3. 传入完整的需求文档文本作为 requirement 参数
-        4. 可选传入 module（模块名）和 output_dir（输出目录）
-
-        返回：Excel 文件绝对路径 + 用例数量摘要。
-
-      # write_test_cases 工具内部调用 LLM 时的提示词。
-      # 变量：{kb_section}=知识库样本, {requirement}=需求文档, {module}=模块名
-      system_prompt: |
-        你是一名拥有丰富经验的软件测试工程师，专注于为移动应用编写测试用例。
-
-        你的任务是将需求文档转换为结构化的测试用例列表，以 JSON 数组格式输出。
-
-        ## 输出格式（严格遵守）
-        只输出 JSON 数组，不加任何 Markdown 标记或解释文字。
-        每个测试用例的字段如下：
-          {
-            "title": "用例标题（动词+对象，如'正常登录成功'、'密码错误时登录失败'）",
-            "module": "所属功能模块",
-            "precondition": "前置条件（如'用户已注册并登录'，无则填'无'）",
-            "steps": "测试步骤（多步用\\n分隔，每步以数字序号开头）",
-            "expected": "预期结果（明确可验证，如'跳转首页，Toast提示登录成功'）",
-            "priority": "P0 / P1 / P2",
-            "type": "正向 / 反向 / 边界 / 异常",
-            "notes": "备注（无则留空）"
-          }
-
-        ## 覆盖原则
-        - P0：核心主流程正向用例，直接影响用户核心操作
-        - P1：重要功能路径，包含主要反向/异常场景
-        - P2：边界值、兼容性、极端输入场景
-        - 每个需求点至少覆盖：1条正向 + 1条反向或异常 + 1条边界（如适用）
-
-        ## 描述风格
-        - 步骤语言简洁清晰，面向测试执行人员
-        - 预期结果具体可测量，避免"正常显示"等模糊表述
-        - 与知识库样本的风格、粒度、术语保持一致
 
   # 按领域拆分的 Agent Profile。
   # API /query 默认使用 qa_agent；其他 profile 可供 CLI / 后续接口显式选择。
@@ -343,34 +105,39 @@ agent:
       max_iterations: 10
       max_history_tokens: 4000
       system_prompt: |
-        你是一个专注于软件测试的 AI 助手，帮助测试人员查询信息、分析问题、生成测试用例。
+        你是一个专注于软件测试的 AI 助手，负责知识查询、需求分析、测试用例设计和自动化场景执行。
+
+        ## 信息来源优先级
+        查询叭嗒功能、现有逻辑、页面行为、跳转规则时，必须优先使用知识库中的 Excel 测试用例作为事实来源。
+        Bug 记录只用于说明历史缺陷、异常表现或风险，不能替代 Excel 测试用例定义当前功能。
+        XMind 只作为历史测试思路或辅助参考；若 XMind 与 Excel 测试用例冲突，必须以 Excel 测试用例为准。
+        网络搜索结果只作为“网络补充”。如果知识库已有相关内容，不要把网络内容合并进功能结论。
+        如果只有网络搜索结果包含某个功能，必须明确写成“网络搜索结果称/网络资料显示”，不能写成确定的当前产品功能。
+        如果工具提示未命中 Excel 测试用例，只能将 Bug/XMind 内容称为辅助参考，不要总结为完整、权威的当前功能清单；需要权威当前逻辑时，应提示用户补充或重建 Excel 测试用例知识库。
+        用户要求分析需求并提供需求文本或本地文件路径时，必须以当前 PRD 为唯一需求事实来源，优先直接调用 analyze_requirement。
+        需求分析场景不要再调用 search_knowledge 补全功能结论；KB 只能作为 analyze_requirement 内部的历史功能、历史差异和回测范围参考。
+        需求分析必须先调用 analyze_requirement 的 draft 模式，只向用户输出待确认问题，不要直接生成最终 JSON。
+        用户答复待确认问题后，自动调用 analyze_requirement 的 final 模式，并把用户答复作为 clarification_answers 传入，生成 confirmed 需求分析 JSON。
+        生成测试用例时必须使用 confirmed 需求分析 JSON 的 analysis_json_path 调用 design_test_cases；不要重新调用 analyze_requirement，也不要把 PRD 路径当作 requirement 传给 design_test_cases。
+        来自 PRD、RequirementIR、确认版 JSON、测试用例或执行报告的 UI 文案、按钮名、入口名、页面名、状态文案必须逐字引用；不得用同义词、美化词或产品经验改写。
 
         ## 回答规则
         - 使用中文回答
-        - 优先使用知识库工具
+        - 仅在需要时调用工具，优先选择最贴近目标的高阶工具
+        - 回答中必须区分“知识库结论”和“网络补充”，不要混写来源
         - 所有工具都无法回答时，明确说明"根据目前的信息无法回答"
       tools:
-        - knowledge_search
-        - web_search
+        - search_knowledge
+        - analyze_requirement
+        - design_test_cases
+        - execute_scenario
 
-    requirement_agent:
+    mobile_debug:
       max_iterations: 10
       max_history_tokens: 4000
       system_prompt: |
-        你是一名资深测试分析助手，负责需求解析、需求评审和需求测试视角分析。
-        对结构化输出和需求质量把关负责，避免臆测。
-      tools:
-        - knowledge_search
-        - requirement_parser
-        - requirement_reviewer
-        - analyze_requirements
-
-    mobile_agent:
-      max_iterations: 10
-      max_history_tokens: 4000
-      system_prompt: |
-        你是一名移动端自动化测试助手，负责设备连接、页面识别、动作执行和断言校验。
-        所有 UI 操作前先确保设备连接成功。
+        你是一名移动端自动化调试助手，负责设备连接、页面识别、动作执行和断言校验。
+        这是底层调试 profile，适合排障，不适合日常业务问答。
       tools:
         - device_tool
         - screen_tool
@@ -380,7 +147,7 @@ agent:
 # ── requirement_parser / reviewer 技术参数 ────────────────────────────────────
 req_parser:
   output_dir: "./outputs/requirement_ir"
-  temperature: 0.2    # lower = more deterministic schema output
+  temperature: 0.2    # 越低越容易得到确定性的 schema 输出
   max_tokens: 8192
 
 req_reviewer:
@@ -405,6 +172,7 @@ test_generator:
     {requirement}
 
     模块名称：{module}
+    生成模式：{generation_mode}
 
     请为上述需求生成完整的测试用例，输出 JSON 数组。
   # Excel 列定义（顺序即输出列顺序，可自定义列名和宽度）
@@ -419,18 +187,18 @@ test_generator:
     - {name: "用例类型", width: 10}
     - {name: "备注", width: 16}
 
-# ── Mobile UI Automation (Phase 3) ──────────────────────────────────────────
-# Install optional deps first:  pip install -e ".[mobile]"
-# Ensure Appium server is running:  npx appium
+# ── Mobile UI Automation（Phase 3）──────────────────────────────────────────
+# 请先安装可选依赖：pip install -e ".[mobile]"
+# 确保 Appium server 已运行：npx appium
 mobile:
   appium_server_url: "http://localhost:4723"
-  device_name: "NXTDU16B05013894"              # e.g. "emulator-5554" or "R5CX1234ABCD"
-  platform_version: "8.0"         # e.g. "14"
-  app_package: "com.iqiyi.acg"              # e.g. "com.example.app"
-  # app_activity — deprecated: launch_app uses activate_app instead of startActivity
-  # (most inner Activities are not exported, causing SecurityException on EMUI etc.)
+  device_name: "NXTDU16B05013894"              # 例如 "emulator-5554" 或 "R5CX1234ABCD"
+  platform_version: "8.0"         # 例如 "14"
+  app_package: "com.iqiyi.acg"              # 例如 "com.example.app"
+  # app_activity 已废弃：launch_app 使用 activate_app，而不是 startActivity
+  # （大多数内部 Activity 未导出，会在 EMUI 等系统上导致 SecurityException）
   # app_activity: ""
-  new_command_timeout: 300     # seconds before Appium closes idle session
+  new_command_timeout: 300     # Appium 关闭空闲会话前等待的秒数
   screenshot_dir: "./outputs/screenshots"
   # ── Screen Tool 分析策略 ─────────────────────────────────────────────────
   # XML 优先：只有 XML 信息不足时才截图调用 Qwen VL。
@@ -447,11 +215,11 @@ mobile:
   no_reset: true                   # 不清除 App 数据（保持已授权状态）
   auto_grant_permissions: true     # 自动同意运行时权限弹窗
 
-# Qwen VL — used by screen_tool for visual page analysis (VLM fallback)
-# API key: set DASHSCOPE_API_KEY env var, or fill api_key below
+# Qwen VL：供 screen_tool 做视觉页面分析（VLM 兜底）
+# API key：设置 DASHSCOPE_API_KEY 环境变量，或填写下方 api_key
 qwen_vision:
-  model: "qwen3.6-plus"        # Qwen3.6 VL for screen analysis
-  api_key: null                # null → reads DASHSCOPE_API_KEY from env
+  model: "qwen3.6-plus"        # 用于屏幕分析的 Qwen3.6 VL
+  api_key: null                # null → 从环境变量读取 DASHSCOPE_API_KEY
   max_tokens: 1024
 
 api:

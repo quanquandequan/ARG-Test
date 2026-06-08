@@ -1,4 +1,4 @@
-"""Tests for Device, Screen, Action, and Assertion tools.
+"""Device、Screen、Action 与 Assertion 工具测试。
 
 All tests use FakeAppiumDriverManager — no real Appium / device required.
 """
@@ -119,13 +119,13 @@ class TestScreenTool:
 
     @pytest.mark.asyncio
     async def test_second_call_hits_cache(self, tool, connected_driver, page_cache):
-        # First call populates cache
+        # 第一次调用填充缓存
         await tool.execute(action="get_current_screen")
 
-        # Corrupt the driver's page source to detect if driver is called again
-        connected_driver._page_source = "<hierarchy/>"  # would return different content
+        # 篡改 driver 的 page source，用于检测是否再次调用 driver
+        connected_driver._page_source = "<hierarchy/>"  # 会返回不同内容
         result = await tool.execute(action="get_current_screen")
-        # Cache hit: result should still contain original login page content
+        # 命中缓存：结果仍应包含原始登录页内容
         assert "LoginActivity" in result
 
     @pytest.mark.asyncio
@@ -151,7 +151,7 @@ class TestScreenTool:
 
     @pytest.mark.asyncio
     async def test_vlm_not_called_when_xml_rich(self, connected_driver, page_cache):
-        """When XML has enough elements, VLM should not be called."""
+        """XML 元素足够时，不应调用 VLM。"""
         call_count = [0]
 
         class FakeVLM:
@@ -164,7 +164,7 @@ class TestScreenTool:
 
         tool = ScreenTool(driver_manager=connected_driver, page_cache=page_cache, vlm=FakeVLM())
         await tool.execute(action="get_current_screen")
-        assert call_count[0] == 0  # VLM not called — XML was sufficient
+        assert call_count[0] == 0  # 未调用 VLM，因为 XML 已足够
 
 
 # ── ActionTool ────────────────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ class TestActionTool:
 
     @pytest.mark.asyncio
     async def test_tap_by_text(self, tool, connected_driver):
-        # Use unique text that doesn't match "欢迎登录" via fuzzy match
+        # 使用唯一文本，避免通过模糊匹配命中 "欢迎登录"
         result = await tool.execute(action="tap", target="忘记密码？")
         assert "已点击" in result
         assert len(connected_driver._tapped) == 1
@@ -200,13 +200,13 @@ class TestActionTool:
 
     @pytest.mark.asyncio
     async def test_tap_invalidates_cache(self, tool, page_cache):
-        # Pre-populate cache
+        # 预填充缓存
         screen = parse_page_source(LOGIN_XML)
         page_cache.put("h1", screen)
         assert page_cache.size() == 1
 
         await tool.execute(action="tap", x=100, y=200)
-        assert page_cache.size() == 0  # cache invalidated
+        assert page_cache.size() == 0  # 缓存已失效
 
     @pytest.mark.asyncio
     async def test_input_text(self, tool, connected_driver):
@@ -316,7 +316,7 @@ class TestAssertionTool:
 
     @pytest.mark.asyncio
     async def test_assert_checked_passes(self, connected_driver):
-        """Test checked state using HOME_XML which has a checked CheckBox."""
+        """使用带已勾选 CheckBox 的 HOME_XML 测试 checked 状态。"""
         connected_driver.set_page_source(HOME_XML)
         tool = AssertionTool(driver_manager=connected_driver)
         result = await tool.execute(action="assert_checked", element_text="记住我")

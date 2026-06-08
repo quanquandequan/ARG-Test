@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""RAG Agent CLI — single queries and interactive chat.
+"""RAG Agent CLI：单次查询与交互式聊天。
 
-Usage:
-    rag ask "你的问题"              # Single query
-    rag ask -s "你的问题"           # Single query + streaming
-    rag ask -v "你的问题"           # Verbose: show tool calls + timing
-    rag chat                        # Interactive chat mode
-    rag chat -s                     # Interactive + streaming
-    rag chat -v                     # Interactive + verbose
-    rag --env production ask "..."  # Use production config
+用法：
+    rag ask "你的问题"              # 单次查询
+    rag ask -s "你的问题"           # 单次查询 + 流式输出
+    rag ask -v "你的问题"           # 详细模式：显示工具调用与耗时
+    rag chat                        # 交互式聊天模式
+    rag chat -s                     # 交互式 + 流式输出
+    rag chat -v                     # 交互式 + 详细模式
+    rag --env production ask "..."  # 使用生产配置
 """
 
 from __future__ import annotations  # noqa: I001
 
-# -- Suppress C++ gRPC stderr noise via fd-level redirect ------------------
+# -- 通过 fd 级重定向抑制 C++ gRPC stderr 噪声 ---------------------------
 from src.core.utils import suppress_grpc_stderr
 
 suppress_grpc_stderr()
@@ -21,18 +21,18 @@ suppress_grpc_stderr()
 
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
-import readline  # noqa: E402, F401 — init readline/libedit for CJK backspace
+import readline  # noqa: E402, F401 — 初始化 readline/libedit 以支持 CJK 退格
 import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from src.core.utils import format_answer, load_dotenv, parse_sse_event  # noqa: E402
 
-# Re-export for backward compatibility (tests import from cli)
+# 为向后兼容重新导出（测试会从 cli 导入）
 _format_answer = format_answer
 _parse_sse_event = parse_sse_event
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-# Ensure project root is on sys.path for both `python -m src.agent.cli` and `pip install -e`
+# 确保 `python -m src.agent.cli` 和 `pip install -e` 时项目根目录都在 sys.path 中
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
@@ -46,7 +46,7 @@ async def _run_query(args):
     setup_logging()
 
     agent = get_agent()
-    print()  # blank line before answer
+    print()  # 答案前输出空行
 
     if args.stream:
         async for event in agent.run_stream(query=args.query):
@@ -164,7 +164,7 @@ async def _run_chat(args):
             else:
                 print(f"Agent: {formatted}")
 
-        # Append to history (append both sides so multi-turn works)
+        # 追加到历史记录（双方消息都追加，保证多轮对话可用）
         history.append(Message(role="user", content=query))
         history.append(Message(role="assistant", content=last_answer))
         print()
@@ -188,13 +188,13 @@ def main():
     parser.add_argument("--env", default="development", help="配置环境 (default: development)")
     sub = parser.add_subparsers(dest="command")
 
-    # ask
+    # ask 子命令
     ask = sub.add_parser("ask", help="单次查询")
     ask.add_argument("query", help="你的问题")
     ask.add_argument("-s", "--stream", action="store_true", help="流式输出")
     ask.add_argument("-v", "--verbose", action="store_true", help="显示工具调用、计时和步骤")
 
-    # chat
+    # chat 子命令
     chat = sub.add_parser("chat", help="交互式对话")
     chat.add_argument("-s", "--stream", action="store_true", help="流式输出")
     chat.add_argument("-v", "--verbose", action="store_true", help="显示工具调用")

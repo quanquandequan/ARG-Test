@@ -1,49 +1,49 @@
-"""Domain-specific exception hierarchy."""
+"""领域专用异常层级。"""
 
 
 class RAGPipelineError(Exception):
-    """Base exception for all RAG pipeline errors."""
+    """所有 RAG pipeline 错误的基类。"""
 
 
 class ConfigurationError(RAGPipelineError):
-    """Configuration loading or validation error."""
+    """配置加载或校验错误。"""
 
 
 class IngestionError(RAGPipelineError):
-    """Document ingestion error (unreadable file, unsupported format)."""
+    """文档摄取错误（文件不可读、格式不支持）。"""
 
 
 class ChunkingError(IngestionError):
-    """Text chunking error."""
+    """文本分块错误。"""
 
 
 class EmbeddingError(RAGPipelineError):
-    """Embedding model inference error."""
+    """Embedding 模型推理错误。"""
 
 
 class VectorDBError(RAGPipelineError):
-    """Vector database operation error."""
+    """向量数据库操作错误。"""
 
 
 class ConnectionError(VectorDBError):
-    """Vector database connection error."""
+    """向量数据库连接错误。"""
 
 
 class CollectionNotFoundError(VectorDBError):
-    """Requested collection does not exist."""
+    """请求的 collection 不存在。"""
 
 
 class RetrievalError(RAGPipelineError):
-    """Retrieval operation error."""
+    """检索操作错误。"""
 
 
 class RerankerError(RetrievalError):
-    """Reranker model inference error."""
+    """Reranker 模型推理错误。"""
 
 
 class LLMError(RAGPipelineError):
-    """LLM provider error (API call failure, rate limit, etc.)."""
+    """LLM provider 错误（API 调用失败、限流等）。"""
 
 
 class ValidationError(RAGPipelineError):
-    """Request/response validation error."""
+    """请求/响应校验错误。"""

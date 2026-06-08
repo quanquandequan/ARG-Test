@@ -1,4 +1,4 @@
-"""Tests for individual agent tools."""
+"""单个 Agent 工具测试。"""
 
 import pytest
 
@@ -63,7 +63,7 @@ class TestToolRegistry:
 
 class TestWebSearchTool:
     async def test_web_search_returns_fallback(self):
-        """Web search should gracefully handle being called without network."""
+        """无网络时 web search 应优雅处理调用。"""
         tool = WebSearchTool()
         result = await tool.execute(query="Python")
         assert isinstance(result, str)

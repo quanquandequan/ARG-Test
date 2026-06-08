@@ -1,4 +1,4 @@
-"""FastAPI middleware: request ID, timing, CORS."""
+"""FastAPI 中间件：请求 ID、耗时统计与 CORS。"""
 
 import time
 import uuid

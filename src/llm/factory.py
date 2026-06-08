@@ -1,4 +1,4 @@
-"""LLM factory — config-driven instantiation."""
+"""LLM 工厂：按配置驱动实例化。"""
 
 import os
 

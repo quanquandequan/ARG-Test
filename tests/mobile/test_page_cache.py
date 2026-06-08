@@ -1,4 +1,4 @@
-"""Unit tests for PageCache — no Appium required."""
+"""PageCache 单元测试，无需 Appium。"""
 
 import time
 
@@ -87,9 +87,9 @@ def test_max_size_evicts_oldest():
     time.sleep(0.01)
     cache.put("h2", screen)
     time.sleep(0.01)
-    cache.put("h3", screen)  # should evict h1
+    cache.put("h3", screen)  # 应淘汰 h1
     assert cache.size() == 2
-    assert cache.get("h1") is None  # oldest evicted
+    assert cache.get("h1") is None  # 最旧条目已淘汰
     assert cache.get("h2") is not None
     assert cache.get("h3") is not None
 
@@ -113,7 +113,7 @@ def test_put_overwrites_existing():
     entry = cache.get("h1")
     assert entry is not None
     assert entry.activity == ".B"
-    assert cache.size() == 1  # not duplicated
+    assert cache.size() == 1  # 未重复
 
 
 def test_cached_page_is_not_expired_immediately():

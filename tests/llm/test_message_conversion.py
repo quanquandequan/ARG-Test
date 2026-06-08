@@ -1,4 +1,4 @@
-"""A8: Provider message / tool format conversion unit tests."""
+"""A8：Provider 消息 / 工具格式转换单元测试。"""
 
 from __future__ import annotations
 

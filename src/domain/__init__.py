@@ -1,2 +1,1 @@
-"""Domain DTOs and value objects."""
-
+"""领域 DTO 与值对象。"""

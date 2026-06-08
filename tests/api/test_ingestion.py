@@ -1,4 +1,4 @@
-"""API tests for /documents/ingest and DELETE /documents/{id}."""
+"""/documents/ingest 与 DELETE /documents/{id} 的 API 测试。"""
 
 
 def test_ingest_markdown_inserts_chunks(wired_singletons, client):

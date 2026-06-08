@@ -1,4 +1,4 @@
-"""Shared test fixtures and config patching."""
+"""共享测试 fixture 与配置补丁。"""
 
 from __future__ import annotations
 
@@ -65,7 +65,30 @@ def _build_test_config() -> DictConfig:
                 "max_iterations": 5,
                 "max_history_tokens": 2000,
                 "system_prompt": "test",
-                "tools": ["knowledge_search"],
+                "profiles": {
+                    "qa_agent": {
+                        "system_prompt": "test qa agent",
+                        "max_iterations": 5,
+                        "max_history_tokens": 2000,
+                        "tools": [
+                            "search_knowledge",
+                            "analyze_requirement",
+                            "design_test_cases",
+                            "execute_scenario",
+                        ]
+                    },
+                    "mobile_debug": {
+                        "system_prompt": "test mobile debug",
+                        "max_iterations": 5,
+                        "max_history_tokens": 2000,
+                        "tools": [
+                            "device_tool",
+                            "screen_tool",
+                            "action_tool",
+                            "assertion_tool",
+                        ]
+                    },
+                },
             },
             "api": {
                 "host": "127.0.0.1",
@@ -85,7 +108,7 @@ def test_config() -> DictConfig:
 
 @pytest.fixture(autouse=True)
 def _patch_config(test_config, monkeypatch):
-    """Make `get_config()` return the test config without touching YAML files."""
+    """让 `get_config()` 返回测试配置，且不触碰 YAML 文件。"""
     monkeypatch.setattr(cfg_mod, "_CONFIG", test_config, raising=False)
     yield
     monkeypatch.setattr(cfg_mod, "_CONFIG", None, raising=False)

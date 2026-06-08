@@ -1,4 +1,4 @@
-"""Typed tool result wrapper with an agent-friendly text rendering."""
+"""类型化工具结果包装器，支持面向 Agent 的文本渲染。"""
 
 from __future__ import annotations
 
@@ -17,4 +17,3 @@ class ToolExecutionResult:
 
     def __str__(self) -> str:
         return self.content
-

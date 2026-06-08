@@ -1,16 +1,19 @@
-"""Application services for requirements analysis and test-case generation."""
+"""需求分析与测试用例生成应用服务。"""
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
 from src.agent.tools.analyze_requirements import AnalyzeRequirementsTool
-from src.agent.tools.write_test_cases import WriteTestCasesTool
 from src.application.artifact_repository import LocalArtifactRepository
+from src.application.requirement_context import build_requirement_kb_context
+from src.application.workflows import TestCaseGenerationWorkflow
 from src.domain.artifacts import ArtifactKind
 from src.domain.requirements import (
     RequirementAnalysisResult,
+    TestCaseGenerationRequest,
     TestCaseGenerationResult,
 )
 from src.ingestion.cleaner import TextCleaner
@@ -41,7 +44,11 @@ class RequirementAnalysisService:
     ) -> RequirementAnalysisResult:
         requirement_text = self._load_requirement_text(filename, content)
         resolved_module = module.strip() or "需求分析"
-        kb_context = await self._build_kb_context(resolved_module, requirement_text)
+        kb_context = await build_requirement_kb_context(
+            self._retrieval_engine,
+            resolved_module,
+            requirement_text,
+        )
 
         tool_result = await self._analyzer_tool.execute_typed(
             requirement=requirement_text,
@@ -49,33 +56,35 @@ class RequirementAnalysisService:
             module=resolved_module,
         )
         analysis = tool_result.data
+        if analysis is None:
+            raise ValueError(tool_result.content or "需求分析未产出有效结构化结果。")
 
-        metadata = {
-            "module": analysis.module,
-            "summary": analysis.summary,
-            "feature_count": analysis.feature_count,
-            "risk_count": analysis.risk_count,
-            "clarification_count": analysis.clarification_count,
-        }
-        json_artifact = self._artifacts.save_json(
-            ArtifactKind.REQUIREMENT_ANALYSIS_JSON,
-            analysis.module,
-            analysis.graph,
-            metadata=metadata,
-            suffix="req_graph",
+        json_artifact = next(
+            (
+                artifact
+                for artifact in tool_result.artifacts
+                if artifact.kind == ArtifactKind.REQUIREMENT_ANALYSIS_JSON
+            ),
+            None,
         )
-        markdown_artifact = self._artifacts.save_text(
-            ArtifactKind.REQUIREMENT_ANALYSIS_MARKDOWN,
-            analysis.module,
-            self._analyzer_tool.render_markdown(analysis.graph, analysis.module),
-            ".md",
-            metadata=metadata,
-            suffix="analysis",
-        )
+        if json_artifact is None:
+            metadata = {
+                "module": analysis.module,
+                "summary": analysis.summary,
+                "feature_count": analysis.feature_count,
+                "risk_count": analysis.risk_count,
+                "clarification_count": analysis.clarification_count,
+            }
+            json_artifact = self._artifacts.save_json(
+                ArtifactKind.REQUIREMENT_ANALYSIS_JSON,
+                analysis.module,
+                analysis.graph,
+                metadata=metadata,
+                suffix="req_graph",
+            )
         return RequirementAnalysisResult(
             analysis=analysis,
             json_artifact=json_artifact,
-            markdown_artifact=markdown_artifact,
         )
 
     def _load_requirement_text(self, filename: str, content: bytes) -> str:
@@ -90,90 +99,130 @@ class RequirementAnalysisService:
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    async def _build_kb_context(self, module: str, requirement_text: str) -> str:
-        query = f"{module} 测试用例".strip() if module.strip() else requirement_text[:60]
-        results = await self._retrieval_engine.search(query=query, top_k=5, final_k=5)
-        if not results:
-            return ""
-
-        lines: list[str] = []
-        for idx, result in enumerate(results, start=1):
-            lines.append(f"[{idx}] 来源: {result.document_id}\n{result.content}")
-        return "\n\n".join(lines)
-
-
 class TestCaseGenerationService:
+    __test__ = False
+
     def __init__(
         self,
-        loader: DocumentLoader,
-        cleaner: TextCleaner,
-        retrieval_engine: RetrievalEngine,
-        writer_tool: WriteTestCasesTool,
-        artifacts: LocalArtifactRepository,
+        workflow: TestCaseGenerationWorkflow,
     ):
-        self._loader = loader
-        self._cleaner = cleaner
-        self._retrieval_engine = retrieval_engine
-        self._writer_tool = writer_tool
-        self._artifacts = artifacts
+        self._workflow = workflow
+
+    async def generate(
+        self,
+        request: TestCaseGenerationRequest,
+        *,
+        use_artifact_repository: bool = False,
+    ) -> TestCaseGenerationResult:
+        generation = await self._workflow.run(request)
+        if use_artifact_repository:
+            return self._workflow.export_to_artifacts(
+                generation,
+                output_dir=request.output_dir,
+                request_id=request.request_id,
+            )
+        return self._workflow.export_to_directory(generation, request.output_dir)
 
     async def generate_from_upload(
         self,
         filename: str,
         content: bytes,
         module: str = "",
+        generation_mode: str = "manual",
     ) -> TestCaseGenerationResult:
-        requirement_text = self._load_requirement_text(filename, content)
+        requirement_text = self._workflow.load_requirement_text(filename, content)
         resolved_module = module.strip() or "通用"
         kb_samples = await self._build_kb_samples(resolved_module, requirement_text)
-        tool_result = await self._writer_tool.execute_typed(
-            requirement=requirement_text,
-            kb_samples=kb_samples,
+        return await self.generate(
+            TestCaseGenerationRequest(
+                requirement=requirement_text,
+                kb_samples=kb_samples,
+                module=resolved_module,
+                generation_mode=generation_mode,
+            ),
+            use_artifact_repository=True,
+        )
+
+    async def generate_from_text(
+        self,
+        requirement: str,
+        kb_samples: str = "",
+        module: str = "",
+        output_dir: str = "",
+        generation_mode: str = "manual",
+        system_prompt_override: str = "",
+        request_id: str = "",
+        use_artifact_repository: bool = True,
+    ) -> TestCaseGenerationResult:
+        return await self.generate(
+            TestCaseGenerationRequest(
+                requirement=requirement,
+                kb_samples=kb_samples,
+                module=module,
+                output_dir=output_dir,
+                generation_mode=generation_mode,
+                system_prompt_override=system_prompt_override,
+                request_id=request_id,
+            ),
+            use_artifact_repository=use_artifact_repository,
+        )
+
+    async def generate_from_analysis_json(
+        self,
+        analysis_json_path: str,
+        module: str = "",
+        output_dir: str = "",
+        generation_mode: str = "manual",
+        system_prompt_override: str = "",
+        request_id: str = "",
+        use_artifact_repository: bool = True,
+    ) -> TestCaseGenerationResult:
+        graph = _load_confirmed_analysis_graph(analysis_json_path)
+        resolved_module = (
+            module.strip()
+            or str(graph.get("_meta", {}).get("module") or "")
+            or "通用"
+        )
+        request = TestCaseGenerationRequest(
+            requirement=json.dumps(graph, ensure_ascii=False),
             module=resolved_module,
+            output_dir=output_dir,
+            generation_mode=generation_mode,
+            system_prompt_override=system_prompt_override,
+            request_id=request_id,
         )
-        generation = tool_result.data
-
-        artifact = self._artifacts.allocate(
-            ArtifactKind.TEST_CASES_XLSX,
-            generation.module,
-            ".xlsx",
-            metadata={"module": generation.module, "case_count": generation.case_count},
-        )
-        self._writer_tool.write_cases_to_excel(
-            generation.cases,
-            artifact.path,
-            generation.module,
-        )
-        artifact = self._artifacts.finalize(
-            artifact,
-            metadata={"kb_samples_used": bool(generation.kb_samples.strip())},
-        )
-
-        return TestCaseGenerationResult(
-            generation=generation,
-            workbook_artifact=artifact,
-        )
-
-    def _load_requirement_text(self, filename: str, content: bytes) -> str:
-        suffix = Path(filename or "upload").suffix
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(content)
-            tmp_path = Path(tmp.name)
-
-        try:
-            doc = self._loader.load(tmp_path)
-            return self._cleaner.clean(doc.content).strip()
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        generation = await self._workflow.run_from_analysis_graph(graph, request)
+        if use_artifact_repository:
+            return self._workflow.export_to_artifacts(
+                generation,
+                output_dir=request.output_dir,
+                request_id=request.request_id,
+            )
+        return self._workflow.export_to_directory(generation, request.output_dir)
 
     async def _build_kb_samples(self, module: str, requirement_text: str) -> str:
-        query = f"{module} 测试用例".strip() if module.strip() else requirement_text[:60]
-        results = await self._retrieval_engine.search(query=query, top_k=5, final_k=3)
-        if not results:
-            return ""
+        return await self._workflow.build_kb_samples(module, requirement_text)
 
-        lines: list[str] = []
-        for idx, result in enumerate(results, start=1):
-            lines.append(f"[{idx}] 来源: {result.document_id}\n{result.content}")
-        return "\n\n".join(lines)
+    def _load_requirement_text(self, filename: str, content: bytes) -> str:
+        return self._workflow.load_requirement_text(filename, content)
 
+
+def _load_confirmed_analysis_graph(path: str) -> dict:
+    analysis_path = Path(path.strip())
+    if not analysis_path.exists():
+        raise ValueError(f"确认版需求分析 JSON 不存在：{path}")
+    if not analysis_path.is_file():
+        raise ValueError(f"确认版需求分析路径不是文件：{path}")
+    try:
+        graph = json.loads(analysis_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"无法解析需求分析 JSON：{exc}") from exc
+    if not isinstance(graph, dict):
+        raise ValueError("需求分析 JSON 必须是对象。")
+    status = str(graph.get("_meta", {}).get("analysis_status") or "")
+    if status != "confirmed":
+        raise ValueError(
+            "请先完成需求确认并生成确认版需求分析 JSON；"
+            "当前 JSON 不是 confirmed 状态。"
+        )
+    return graph

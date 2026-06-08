@@ -1,4 +1,4 @@
-"""Unit tests for the config loader."""
+"""配置加载器单元测试。"""
 
 import pytest
 

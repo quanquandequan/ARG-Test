@@ -1,4 +1,4 @@
-"""Unit tests for RequirementIR and ReviewResult schema/helpers."""
+"""RequirementIR 与 ReviewResult schema / 辅助方法的单元测试。"""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def test_invalid_priority_raises():
 def test_compact_summary_contains_counts():
     ir = RequirementIR.model_validate(_full_ir_dict())
     summary = ir.to_compact_summary()
-    assert "1" in summary   # feature count
+    assert "1" in summary   # 功能数量
     assert "功能点" in summary
     assert "业务规则" in summary
 
@@ -147,7 +147,7 @@ def test_from_llm_json_extracts_embedded_json():
 
 def test_from_llm_json_returns_none_on_invalid():
     assert RequirementIR.from_llm_json("not JSON at all") is None
-    assert RequirementIR.from_llm_json("[]") is None   # array, not object
+    assert RequirementIR.from_llm_json("[]") is None   # 数组而非对象
 
 
 # ── ReviewResult ──────────────────────────────────────────────────────────────

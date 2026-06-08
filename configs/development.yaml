@@ -1,4 +1,4 @@
-# Development overrides
+# 开发环境覆盖配置
 app:
   debug: true
   log_level: "DEBUG"

@@ -1,4 +1,4 @@
-"""Reranker factory — config-driven instantiation."""
+"""Reranker 工厂：按配置驱动实例化。"""
 
 import os
 

@@ -1,4 +1,4 @@
-"""Tool registry — register, lookup, and list tool schemas."""
+"""工具注册表：注册、查找并列出工具 schema。"""
 
 from src.agent.base_tool import BaseTool
 
@@ -21,7 +21,7 @@ class ToolRegistry:
         return tool
 
     def definitions(self) -> list[dict]:
-        """Return tool schemas for LLM function-calling."""
+        """返回供 LLM function-calling 使用的工具 schema。"""
         return [t.to_tool_schema() for t in self._tools.values()]
 
     def names(self) -> list[str]:

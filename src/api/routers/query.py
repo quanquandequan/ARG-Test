@@ -1,10 +1,11 @@
-"""Query endpoints — Agent-based RAG Q&A and streaming."""
+"""查询端点：基于 Agent 的 RAG 问答与流式输出。"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from src.api import dependencies as deps
 from src.api.schemas.query import AgentStepOut, QueryRequest, QueryResponse
+from src.bootstrap import UnknownAgentProfileError
 from src.llm.types import Message
 
 router = APIRouter(tags=["query"])
@@ -12,7 +13,10 @@ router = APIRouter(tags=["query"])
 
 @router.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest):
-    agent = deps.get_agent()
+    try:
+        agent = deps.get_agent(req.profile)
+    except UnknownAgentProfileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     history = None
     if req.history:
@@ -48,7 +52,10 @@ async def query(req: QueryRequest):
 
 @router.post("/query/stream")
 async def query_stream(req: QueryRequest):
-    agent = deps.get_agent()
+    try:
+        agent = deps.get_agent(req.profile)
+    except UnknownAgentProfileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     history = None
     if req.history:

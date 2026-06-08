@@ -1,4 +1,4 @@
-"""Agent-related data types."""
+"""Agent 相关数据类型。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class AgentStep:
     tool_call: ToolCall | None = None
     tool_result: str = ""
     thinking: str = ""
-    duration_ms: float = 0.0  # wall-clock time for this step (LLM + tool execution)
+    duration_ms: float = 0.0  # 此步骤的墙钟耗时（LLM + 工具执行）
 
 
 @dataclass

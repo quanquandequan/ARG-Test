@@ -1,4 +1,4 @@
-"""Pydantic schemas for document ingestion."""
+"""文档摄取的 Pydantic schema。"""
 
 from pydantic import BaseModel
 

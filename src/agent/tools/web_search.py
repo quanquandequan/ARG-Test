@@ -1,26 +1,25 @@
-"""Web search tool for external real-time information.
+"""用于外部实时信息的网页搜索工具。
 
-Implementation note — **best-effort only**
+实现说明：**仅尽力而为**
 ------------------------------------------
-This tool scrapes the DuckDuckGo HTML endpoint which is public but not an
-official API.  It may break if DuckDuckGo changes its HTML structure.
-Use it only when the knowledge base does not contain the required information.
-For production deployments that require reliable web search, replace
-``_search_duckduckgo`` with a proper API call (e.g. Serper, Brave Search,
-Google Custom Search).
+本工具抓取 DuckDuckGo HTML endpoint，该端点公开但不是官方 API。
+如果 DuckDuckGo 修改 HTML 结构，本工具可能失效。
+仅在知识库不包含所需信息时使用。
+若生产部署需要可靠网页搜索，请将 ``_search_duckduckgo`` 替换为正式 API
+调用（例如 Serper、Brave Search、Google Custom Search）。
 
-Configuration (via ``configs/default.yaml``):
+配置（通过 ``configs/default.yaml``）：
 
 .. code-block:: yaml
 
     agent:
       tools:
         - knowledge_search
-        - web_search            # remove this line to disable web search entirely
+        - web_search            # 移除此行即可完全禁用网页搜索
 
-Environment variables:
+环境变量：
 
-    WEB_SEARCH_TIMEOUT   seconds (default: 10)
+    WEB_SEARCH_TIMEOUT   秒数（默认 10）
 """
 
 from __future__ import annotations
@@ -41,11 +40,10 @@ _DEFAULT_TIMEOUT = 10
 
 
 class WebSearchTool(BaseTool):
-    """Search the web for real-time / external information.
+    """搜索网页以获取实时 / 外部信息。
 
-    **Best-effort**: falls back gracefully if the search service is
-    unavailable, returns an HTTP error, or times out.  Do not rely on this
-    tool for production-critical data paths.
+    **尽力而为**：当搜索服务不可用、返回 HTTP 错误或超时时优雅降级。
+    不要在生产关键数据链路中依赖此工具。
     """
 
     def __init__(self, timeout: float = _DEFAULT_TIMEOUT):
@@ -91,7 +89,7 @@ class WebSearchTool(BaseTool):
             return f"网页搜索暂时不可用，请稍后重试或仅使用知识库回答。原因: {e}"
 
     async def _search_duckduckgo(self, query: str, num_results: int) -> str:
-        """Scrape DuckDuckGo HTML endpoint (best-effort, not an official API)."""
+        """抓取 DuckDuckGo HTML endpoint（尽力而为，非官方 API）。"""
         import httpx
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
