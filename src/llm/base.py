@@ -1,7 +1,7 @@
 """LLM provider 抽象基类。"""
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from src.llm.types import ChatResponse, ContentBlock, Message
 

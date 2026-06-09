@@ -227,7 +227,7 @@ mobile:
 # Qwen VL：供 screen_tool 做视觉页面分析（VLM 兜底）
 # API key：设置 DASHSCOPE_API_KEY 环境变量，或填写下方 api_key
 qwen_vision:
-  model: "qwen3.6-plus"        # 用于屏幕分析的 Qwen3.6 VL
+  model: "qwen3.7-plus"        # 用于屏幕分析的 Qwen3.6 VL
   api_key: null                # null → 从环境变量读取 DASHSCOPE_API_KEY
   max_tokens: 1024
 

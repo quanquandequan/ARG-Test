@@ -6,12 +6,12 @@ import json
 import re
 from pathlib import Path
 
+from src.domain.artifacts.test_design_artifact import TestDesignArtifact
 from src.services.exporters.common import (
     case_to_dict,
     maybe_json,
     normalise_expected_visibility,
 )
-from src.domain.artifacts.test_design_artifact import TestDesignArtifact
 
 
 class JsonExporter:

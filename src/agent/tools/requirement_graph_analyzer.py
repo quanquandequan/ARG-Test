@@ -44,12 +44,12 @@ from pathlib import Path
 
 from src.agent.base_tool import BaseTool
 from src.agent.tool_result import ToolExecutionResult
-from src.services.artifact_repository import LocalArtifactRepository
 from src.core.logging import get_logger
 from src.domain.artifacts import ArtifactKind
 from src.domain.requirements import RequirementAnalysisData
 from src.llm.base import BaseLLM
 from src.llm.types import Message
+from src.services.artifact_repository import LocalArtifactRepository
 
 logger = get_logger(__name__)
 

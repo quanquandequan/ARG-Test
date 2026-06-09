@@ -1,8 +1,17 @@
-"""Requirement analysis service."""
-
 from __future__ import annotations
+import tempfile
+from pathlib import Path
 
+from src.agent.tools.requirement_graph_analyzer import RequirementGraphAnalyzerTool
+from src.domain.artifacts import ArtifactKind
+from src.domain.requirements import RequirementAnalysisResult
+from src.ingestion.cleaner import TextCleaner
+from src.ingestion.loader import DocumentLoader
+from src.retriever.retrieval_engine import RetrievalEngine
+from src.services.artifact_repository import LocalArtifactRepository
+from src.services.requirement_context import build_requirement_kb_context
 
+"""Requirement analysis service."""
 
 class RequirementAnalysisService:
     def __init__(

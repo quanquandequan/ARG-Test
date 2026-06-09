@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from src.agent.base_tool import FINAL_ANSWER_PASSTHROUGH, BaseTool
 from src.agent.tool_result import ToolExecutionResult
-from src.workflows.execution import ExecutionWorkflow
 from src.core.logging import get_logger
 from src.domain.execution import ScenarioExecutionRequest
+from src.workflows.execution import ExecutionWorkflow
 
 logger = get_logger(__name__)
 

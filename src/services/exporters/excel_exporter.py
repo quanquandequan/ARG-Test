@@ -5,13 +5,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from src.domain.artifacts.test_design_artifact import TestDesignArtifact
 from src.services.exporters.common import (
     AUTOMATION_COLUMNS,
     DEFAULT_COLUMNS,
     case_to_dict,
     normalise_generation_mode,
 )
-from src.domain.artifacts.test_design_artifact import TestDesignArtifact
 
 
 class ExcelExporter:

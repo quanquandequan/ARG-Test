@@ -8,11 +8,6 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from src.services.artifact_repository import LocalArtifactRepository
-from src.services.exporters import ExcelExporter, JsonExporter, MarkdownExporter
-from src.services.exporters.common import normalise_generation_mode
-from src.services.case_generator import CaseGeneratorNode
-from src.services.workflow_base import WorkflowContext
 from src.core.logging import get_logger
 from src.domain.artifacts import ArtifactKind, ArtifactRecord
 from src.domain.requirement import Feature, RequirementIR
@@ -21,9 +16,10 @@ from src.domain.requirements import (
     TestCaseGenerationRequest,
     TestCaseGenerationResult,
 )
-from src.ingestion.cleaner import TextCleaner
-from src.ingestion.loader import DocumentLoader
-from src.retriever.retrieval_engine import RetrievalEngine
+from src.services.case_generator import CaseGeneratorNode
+from src.services.exporters import ExcelExporter, JsonExporter, MarkdownExporter
+from src.services.exporters.common import normalise_generation_mode
+from src.services.workflow_base import WorkflowContext
 from src.vectordb.base import SearchResult
 
 logger = get_logger(__name__)
@@ -65,11 +61,11 @@ class TestCaseGenerationWorkflow:
             kb_samples=request.kb_samples,
         )
         # ── Inline pipeline (Step 1-5) ──
-        from src.services.requirement_ir_builder import RequirementIRBuilder
+        from src.domain.artifacts.test_design_artifact import TestDesignArtifact
+        from src.domain.test_design.execution_plan import ExecutionAction, ExecutionPlan
         from src.domain.test_design.test_point import TestPoint
         from src.domain.test_design.test_scenario import TestScenario
-        from src.domain.test_design.execution_plan import ExecutionAction, ExecutionPlan
-        from src.domain.artifacts.test_design_artifact import TestDesignArtifact
+        from src.services.requirement_ir_builder import RequirementIRBuilder
 
         builder = RequirementIRBuilder(llm=self._llm)
         context.requirement_ir = await builder.build(context.requirement_text, context.module, context.kb_samples)
@@ -126,10 +122,10 @@ class TestCaseGenerationWorkflow:
             requirement_ir=_requirement_ir_from_analysis_graph(graph, module),
         )
         # ── Inline pipeline (skip RequirementIR, use graph directly) ──
+        from src.domain.artifacts.test_design_artifact import TestDesignArtifact
+        from src.domain.test_design.execution_plan import ExecutionAction, ExecutionPlan
         from src.domain.test_design.test_point import TestPoint
         from src.domain.test_design.test_scenario import TestScenario
-        from src.domain.test_design.execution_plan import ExecutionAction, ExecutionPlan
-        from src.domain.artifacts.test_design_artifact import TestDesignArtifact
 
         features = graph.get("features", [])
         rules = graph.get("business_rules", [])

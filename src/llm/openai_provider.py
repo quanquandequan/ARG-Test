@@ -2,7 +2,7 @@
 
 import json
 import os
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from src.core.config import get_config
 from src.core.exceptions import LLMError

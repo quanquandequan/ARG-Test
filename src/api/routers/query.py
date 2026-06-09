@@ -4,8 +4,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from src.api import dependencies as deps
-from src.api.schemas.query import AgentStepOut, QueryRequest, QueryResponse
 from src.api.dependencies import UnknownAgentProfileError
+from src.api.schemas.query import AgentStepOut, QueryRequest, QueryResponse
 from src.llm.types import Message
 
 router = APIRouter(tags=["query"])

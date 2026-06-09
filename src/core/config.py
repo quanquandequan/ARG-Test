@@ -2,12 +2,10 @@
 
 import os
 from pathlib import Path
-from typing import Optional
 
-from omegaconf import OmegaConf, DictConfig
+from omegaconf import DictConfig, OmegaConf
 
-
-_CONFIG: Optional[DictConfig] = None
+_CONFIG: DictConfig | None = None
 
 
 def _find_config_dir() -> Path:
@@ -17,7 +15,7 @@ def _find_config_dir() -> Path:
     return Path(__file__).parent.parent.parent / "configs"
 
 
-def load_config(env: Optional[str] = None) -> DictConfig:
+def load_config(env: str | None = None) -> DictConfig:
     global _CONFIG
     if _CONFIG is not None:
         return _CONFIG

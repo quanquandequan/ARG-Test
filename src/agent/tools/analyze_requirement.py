@@ -9,16 +9,16 @@ from src.agent.tool_result import ToolExecutionResult
 from src.agent.tools.requirement_graph_analyzer import RequirementGraphAnalyzerTool
 from src.agent.tools.requirement_parser import RequirementParserTool
 from src.agent.tools.requirement_reviewer import RequirementReviewerTool
-from src.services.requirement_context import build_requirement_kb_context
-from src.services.requirement_input import (
-    RequirementInputError,
-    resolve_requirement_input,
-)
 from src.domain.artifacts import ArtifactKind, ArtifactRecord
 from src.ingestion.cleaner import TextCleaner
 from src.ingestion.loader import DocumentLoader
 from src.llm.base import BaseLLM
 from src.retriever.retrieval_engine import RetrievalEngine
+from src.services.requirement_context import build_requirement_kb_context
+from src.services.requirement_input import (
+    RequirementInputError,
+    resolve_requirement_input,
+)
 
 
 class AnalyzeRequirementTool(BaseTool):

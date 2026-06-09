@@ -20,9 +20,9 @@ from src.services.artifact_repository import LocalArtifactRepository
 from src.services.ingestion_service import DocumentIngestionService
 from src.services.page_cache import PageCache
 from src.services.requirement_analysis import RequirementAnalysisService
+from src.vectordb.factory import get_vectordb
 from src.workflows.execution import ExecutionWorkflow
 from src.workflows.testcase_design import TestCaseGenerationWorkflow
-from src.vectordb.factory import get_vectordb
 
 
 @lru_cache(maxsize=1)
@@ -80,7 +80,7 @@ def get_agent(profile_name=None):
     from omegaconf import OmegaConf
     cfg = get_config().get("agent", {})
     profiles = cfg.get("profiles", {})
-    
+
     if not profile_name and "qa_agent" in profiles:
         cfg_agent = profiles["qa_agent"]
         if OmegaConf.is_config(cfg_agent):
@@ -93,17 +93,17 @@ def get_agent(profile_name=None):
         raise ValueError(f"Unknown agent profile: {profile_name}")
     else:
         cfg_agent = cfg
-    
+
     raw_tools = cfg_agent.get("tools", [])
     if OmegaConf.is_config(raw_tools):
         raw_tools = OmegaConf.to_container(raw_tools, resolve=True)
-    
+
     tools = build_agent_tools(_retrieval_engine(), raw_tools, llm=_llm(),
         test_case_generation_service=get_test_case_generation_service(),
         mobile_execution_service=get_mobile_workflow(),
         driver_manager=_driver_manager(), page_cache=_page_cache(),
         loader=_loader(), cleaner=_cleaner())
-    
+
     return ReActAgent(llm=_llm(), tools=tools,
         system_prompt=cfg_agent.get("system_prompt", "") or "",
         max_iterations=int(cfg_agent.get("max_iterations", 10)),

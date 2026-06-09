@@ -27,8 +27,6 @@ from src.agent.tools.mobile.assertion_tool import AssertionTool
 from src.agent.tools.mobile.device_tool import DeviceTool
 from src.agent.tools.mobile.screen_tool import ScreenTool
 from src.agent.tools.search_knowledge import SearchKnowledgeTool
-from src.workflows.execution import ExecutionWorkflow
-from src.workflows.testcase_design import TestCaseGenerationWorkflow
 from src.core.logging import get_logger
 from src.ingestion.cleaner import TextCleaner
 from src.ingestion.loader import DocumentLoader
@@ -36,6 +34,8 @@ from src.llm.base import BaseLLM
 from src.mobile.driver import AppiumDriverManager
 from src.retriever.retrieval_engine import RetrievalEngine
 from src.services.page_cache import PageCache
+from src.workflows.execution import ExecutionWorkflow
+from src.workflows.testcase_design import TestCaseGenerationWorkflow
 
 logger = get_logger(__name__)
 
@@ -140,20 +140,6 @@ def build_agent_tools(
     def _make_search_knowledge(_desc: str | None, _sp: str | None) -> BaseTool:
         return SearchKnowledgeTool(retrieval_engine)
 
-    def _make_web_search(_desc: str | None, _sp: str | None) -> BaseTool:
-        return WebSearchTool()
-
-    def _make_write_test_cases(
-        _desc: str | None, sys_prompt: str | None
-    ) -> BaseTool | None:
-        if test_case_generation_service is None:
-            logger.warning("service_required_for_tool_skipped", tool="write_test_cases")
-            return None
-        return WriteTestCasesTool(
-            test_case_generation_service,
-            system_prompt=sys_prompt or None,
-        )
-
     def _make_design_test_cases(
         _desc: str | None, sys_prompt: str | None
     ) -> BaseTool | None:
@@ -164,14 +150,6 @@ def build_agent_tools(
             test_case_generation_service,
             system_prompt=sys_prompt or None,
         )
-
-    def _make_analyze_requirements(
-        _desc: str | None, sys_prompt: str | None
-    ) -> BaseTool | None:
-        _llm = _require_llm("analyze_requirements")
-        if _llm is None:
-            return None
-        return RequirementGraphAnalyzerTool(_llm, system_prompt=sys_prompt or None)
 
     def _make_analyze_requirement(
         _desc: str | None, sys_prompt: str | None
@@ -192,25 +170,9 @@ def build_agent_tools(
             cleaner=cleaner,
         )
 
-    def _make_requirement_parser(
-        _desc: str | None, sys_prompt: str | None
-    ) -> BaseTool | None:
-        _llm = _require_llm("requirement_parser")
-        if _llm is None:
-            return None
-        return RequirementParserTool(_llm, system_prompt=sys_prompt or None)
-
-    def _make_requirement_reviewer(
-        _desc: str | None, sys_prompt: str | None
-    ) -> BaseTool | None:
-        _llm = _require_llm("requirement_reviewer")
-        if _llm is None:
-            return None
-        return RequirementReviewerTool(_llm, system_prompt=sys_prompt or None)
-
     def _make_device_tool(_desc: str | None, _sp: str | None) -> BaseTool:
         dm, _ = _require_mobile_runtime("device_tool")
-        return Device_ToolTool(driver_manager=dm)
+        return DeviceTool(driver_manager=dm)
 
     def _make_screen_tool(_desc: str | None, _sp: str | None) -> BaseTool:
         dm, pc = _require_mobile_runtime("screen_tool")
@@ -223,7 +185,7 @@ def build_agent_tools(
 
     def _make_assertion_tool(_desc: str | None, _sp: str | None) -> BaseTool:
         dm, _ = _require_mobile_runtime("assertion_tool")
-        return Assertion_ToolTool(driver_manager=dm)
+        return AssertionTool(driver_manager=dm)
 
     def _make_execute_scenario(_desc: str | None, _sp: str | None) -> BaseTool | None:
         if mobile_execution_service is None:

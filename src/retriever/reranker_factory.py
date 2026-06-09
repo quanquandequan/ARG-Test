@@ -3,10 +3,10 @@
 import os
 
 from src.core.config import get_config
-from src.retriever.reranker_base import BaseReranker
-from src.retriever.reranker import BgeReranker
-from src.retriever.openai_reranker import OpenAIReranker
 from src.retriever.dashscope_reranker import DashScopeReranker
+from src.retriever.openai_reranker import OpenAIReranker
+from src.retriever.reranker import BgeReranker
+from src.retriever.reranker_base import BaseReranker
 
 
 def get_reranker() -> BaseReranker:

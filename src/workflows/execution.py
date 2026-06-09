@@ -10,7 +10,6 @@ from src.agent.tools.mobile.action_tool import ActionTool
 from src.agent.tools.mobile.assertion_tool import AssertionTool
 from src.agent.tools.mobile.device_tool import DeviceTool
 from src.agent.tools.mobile.screen_tool import ScreenTool
-from src.services.artifact_repository import LocalArtifactRepository
 from src.domain.artifacts import ArtifactKind, ArtifactRecord
 from src.domain.execution import (
     ExecutionStepResult,
@@ -18,6 +17,7 @@ from src.domain.execution import (
     ScenarioExecutionResult,
 )
 from src.mobile.driver import AppiumDriverManager
+from src.services.artifact_repository import LocalArtifactRepository
 from src.services.page_cache import PageCache
 
 
