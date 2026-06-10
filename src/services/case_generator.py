@@ -7,6 +7,7 @@ import json
 import re
 
 from src.core.logging import get_logger
+from src.core.prompt_loader import require_prompt_fields
 from src.domain.requirements import GeneratedTestCase
 from src.llm.base import BaseLLM
 from src.llm.types import Message
@@ -17,89 +18,6 @@ from src.services.exporters.common import (
 from src.services.workflow_base import WorkflowContext, WorkflowNode
 
 logger = get_logger(__name__)
-
-SYSTEM_PROMPT = """\
-你是一名资深软件测试工程师，擅长根据需求文档编写完整的测试用例。
-你的任务是将需求文档转换为结构化的测试用例列表，以 JSON 数组格式输出。
-
-## 信息优先级
-- 当前输入的【需求文档内容】是唯一的业务事实来源。
-- 知识库样本只用于参考 Excel 字段、用例粒度、步骤写法和术语风格。
-- 当知识库样本与需求文档冲突时，必须以需求文档为准。
-- 不得从知识库样本中继承需求文档没有写明的业务规则。
-- 本阶段只生成手工功能用例和移动端 UI 自动化用例。
-- 不生成接口测试、埋点测试、配置专项测试；若需求中出现接口字段、
-  配置能力或埋点章节，只作为理解 UI 功能和页面状态的背景。
-
-输出格式要求：
-- 只输出 JSON 数组，不加任何 Markdown 标记或解释文字
-- 每个对象字段固定为 title/module/precondition/steps/expected/priority/type/notes
-- steps 和 expected 必须是普通文本，不要输出数组；多步骤使用 1、2、3 编号换行
-- 手工功能用例需要覆盖正向主流程、边界/异常、回归影响，不要只生成异常用例
-- automation 模式额外输出 data_setup/business_name/ui_display_name/page_route/
-  locator_chain/anchor_text/search_strategy/expected_visibility/forbidden_locators/
-  selectors/automation_steps/assertions
-"""
-
-USER_TEMPLATE = """\
-{kb_section}需求文档内容：
-{requirement}
-
-模块名称：{module}
-生成模式：{generation_mode}
-
-请为上述需求生成完整的测试用例，输出 JSON 数组。
-"""
-
-AUTOMATION_REQUIREMENTS = """\
-
-automation 模式额外要求：
-- automation 模式表示移动端 UI 自动化，不是接口自动化。
-- 用例必须能被移动端自动化 agent 执行，不要只写人工描述。
-- 必须区分需求/业务名称和真实 UI 文案。
-- 禁止把不可见的需求名、组件名、Card 名当作定位词。
-- page_route 必须写成可执行导航路径。
-- locator_chain 必须使用组合定位。
-- search_strategy 必须包含滚动方向、最大滚动次数、停止条件。
-- 存在展示态/空态/隐藏态的数据规则时，必须拆成多条用例。
-- 优先覆盖模块展示、星期切换、作品点击跳转、加追、追番表入口、
-  空态/异常态等 UI 主流程。
-- 不要生成接口请求校验、埋点上报校验、后台配置校验类用例。
-"""
-
-AUTOMATION_BATCH_TEMPLATE = """\
-{kb_section}需求文档内容：
-{requirement}
-
-模块名称：{module}
-生成模式：automation
-
-请只为上方需求文档中的功能点生成移动端 UI 自动化用例，输出 JSON 数组。
-每个功能点生成 1-3 条用例，优先覆盖可被 UI 自动化执行的主流程和关键边界。
-"""
-
-JSON_REPAIR_SYSTEM_PROMPT = """\
-你是 JSON 修复助手。请把用户提供的内容修复为合法 JSON 数组。
-要求：
-- 只输出 JSON 数组，不加 Markdown 或解释。
-- 不新增业务内容，不改写字段含义。
-- 如果某个对象字段缺失，可补空字符串或合理默认值。
-"""
-
-JSON_REPAIR_USER_TEMPLATE = """\
-以下是未能解析的测试用例 JSON，请修复为合法 JSON 数组：
-
-{raw}
-"""
-
-KB_SECTION_TEMPLATE = """\
-以下是知识库中现有的测试用例样本，请参考其描述风格、粒度和术语。
-注意：样本不是本次需求的事实来源，不要复制样本里的业务规则或前置条件。
-
-{samples}
-
----
-"""
 
 
 class CaseGeneratorNode(WorkflowNode):
@@ -124,7 +42,29 @@ class CaseGeneratorNode(WorkflowNode):
         self._max_tokens = (
             max_tokens if max_tokens is not None else int(cfg.get("max_tokens", 8192))
         )
-        self._system_prompt = system_prompt or cfg.get("system_prompt", "") or SYSTEM_PROMPT
+        prompt = require_prompt_fields(
+            "case_generator",
+            [
+                "system_prompt",
+                "user_template",
+                "automation_requirements",
+                "automation_batch_template",
+                "json_repair_system_prompt",
+                "json_repair_user_template",
+                "kb_section_template",
+            ],
+        )
+        self._system_prompt = (
+            system_prompt
+            or cfg.get("system_prompt", "")
+            or prompt["system_prompt"]
+        )
+        self._user_template = prompt["user_template"]
+        self._automation_requirements = prompt["automation_requirements"]
+        self._automation_batch_template = prompt["automation_batch_template"]
+        self._json_repair_system_prompt = prompt["json_repair_system_prompt"]
+        self._json_repair_user_template = prompt["json_repair_user_template"]
+        self._kb_section_template = prompt["kb_section_template"]
 
     async def execute(self, context: WorkflowContext) -> WorkflowContext:
         if context.generation_mode == "automation":
@@ -132,18 +72,18 @@ class CaseGeneratorNode(WorkflowNode):
             return context
 
         kb_section = (
-            KB_SECTION_TEMPLATE.format(samples=context.kb_samples.strip())
+            self._kb_section_template.format(samples=context.kb_samples.strip())
             if context.kb_samples.strip()
             else ""
         )
-        user_content = USER_TEMPLATE.format(
+        user_content = self._user_template.format(
             kb_section=kb_section,
             requirement=context.requirement_text.strip(),
             module=context.module,
             generation_mode=context.generation_mode,
         )
         if context.generation_mode == "automation":
-            user_content += AUTOMATION_REQUIREMENTS
+            user_content += self._automation_requirements
 
         response = await self._llm.generate_chat(
             messages=[
@@ -200,7 +140,7 @@ class CaseGeneratorNode(WorkflowNode):
         features = _extract_feature_payloads(context.requirement_text)
         batches = _chunk_list(features, size=2) if features else [[]]
         kb_section = (
-            KB_SECTION_TEMPLATE.format(samples=context.kb_samples.strip())
+            self._kb_section_template.format(samples=context.kb_samples.strip())
             if context.kb_samples.strip()
             else ""
         )
@@ -210,7 +150,7 @@ class CaseGeneratorNode(WorkflowNode):
                 str(item.get("name") or item.get("id") or f"批次{batch_index}")
                 for item in batch
             ]
-            user_content = AUTOMATION_BATCH_TEMPLATE.format(
+            user_content = self._automation_batch_template.format(
                 kb_section=kb_section,
                 requirement=_render_automation_batch_requirement(
                     context.requirement_text,
@@ -218,7 +158,7 @@ class CaseGeneratorNode(WorkflowNode):
                 ),
                 module=context.module,
             )
-            user_content += AUTOMATION_REQUIREMENTS
+            user_content += self._automation_requirements
             response = await self._llm.generate_chat(
                 messages=[
                     Message(
@@ -261,10 +201,10 @@ class CaseGeneratorNode(WorkflowNode):
             return []
         response = await self._llm.generate_chat(
             messages=[
-                Message(role="system", content=JSON_REPAIR_SYSTEM_PROMPT),
+                Message(role="system", content=self._json_repair_system_prompt),
                 Message(
                     role="user",
-                    content=JSON_REPAIR_USER_TEMPLATE.format(raw=raw[:12000]),
+                    content=self._json_repair_user_template.format(raw=raw[:12000]),
                 ),
             ],
             temperature=0.0,

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
+from pydantic import field_validator, model_validator
+
 from pydantic import BaseModel, Field
 
 
@@ -112,15 +114,30 @@ class RequirementIR(BaseModel):
         text = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
         text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE).strip()
 
-        for candidate in [text, _find_first_json_object(text)]:
+        candidates = [text]
+        extracted = _find_first_json_object(text)
+        if extracted:
+            candidates.append(extracted)
+        
+        for candidate in candidates:
             if not candidate:
                 continue
+            # Try direct parse first
             try:
                 data = json.loads(candidate)
                 if isinstance(data, dict):
                     return cls.model_validate(data)
-            except (json.JSONDecodeError, Exception):
+            except Exception:
                 pass
+            # Try repaired version
+            repaired = _repair_llm_json(candidate)
+            if repaired:
+                try:
+                    data = json.loads(repaired)
+                    if isinstance(data, dict):
+                        return cls.model_validate(data)
+                except Exception:
+                    pass
         return None
 
 
@@ -138,7 +155,7 @@ class Ambiguity(BaseModel):
     id: str
     location: str
     description: str
-    suggestion: str
+    suggestion: str = ""
 
 
 class Gap(BaseModel):
@@ -146,15 +163,24 @@ class Gap(BaseModel):
 
     id: str
     description: str
-    impact: str
-    question: str
+    impact: str = ""
+    question: str = ""
 
 
 class ReviewRisk(BaseModel):
     area: str
     level: Literal["high", "medium", "low"] = "medium"
     description: str
-    mitigation: str
+    suggestion: str = Field(default="", alias="mitigation")
+    
+    @model_validator(mode="before")
+    @classmethod
+    def normalise_fields(cls, data: dict) -> dict:
+        if isinstance(data, dict):
+            # Accept both "suggestion" and "mitigation" from LLM output
+            if "suggestion" in data and "mitigation" not in data:
+                data["mitigation"] = data.pop("suggestion")
+        return data
 
 
 class ReviewResult(BaseModel):
@@ -177,15 +203,38 @@ class ReviewResult(BaseModel):
         text = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
         text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE).strip()
 
-        for candidate in [text, _find_first_json_object(text)]:
+        # Try to find a valid JSON object
+        # _find_first_json_object goes first (handles ```json fences better)
+        candidates = []
+        extracted = _find_first_json_object(text)
+        if extracted:
+            candidates.append(extracted)
+        candidates.append(text)
+        
+        for candidate in candidates:
             if not candidate:
                 continue
+            # Try 1: direct parse
             try:
                 data = json.loads(candidate)
                 if isinstance(data, dict):
                     return cls.model_validate(data)
-            except (json.JSONDecodeError, Exception):
+            except Exception:
                 pass
+            # Try 2: replace ASCII double quotes used as Chinese quotes inside strings
+            # Pattern: Chinese char + " + non-quote content + " + Chinese/punctuation char
+            repaired = re.sub(
+                r'([\u4e00-\u9fff])"([^"]{1,50})"([\u4e00-\u9fff\uff0c\u3002\uff1b\uff0e])',
+                r'\1「\2」\3',
+                candidate
+            )
+            if repaired != candidate:
+                try:
+                    data = json.loads(repaired)
+                    if isinstance(data, dict):
+                        return cls.model_validate(data)
+                except Exception:
+                    pass
         return None
 
     def to_compact_summary(self) -> str:

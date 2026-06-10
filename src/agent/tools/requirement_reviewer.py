@@ -23,6 +23,7 @@ from pathlib import Path
 from src.agent.base_tool import BaseTool
 from src.agent.tool_result import ToolExecutionResult
 from src.core.logging import get_logger
+from src.core.prompt_loader import require_prompt_fields
 from src.domain.artifacts import ArtifactKind
 from src.llm.base import BaseLLM
 from src.llm.types import Message
@@ -32,82 +33,6 @@ from src.services.requirement_ir import RequirementIR, ReviewResult
 logger = get_logger(__name__)
 
 _DEFAULT_OUTPUT_DIR = "./outputs/requirement_ir"
-
-# ── LLM 提示词 ───────────────────────────────────────────────────────────────
-
-_SYSTEM_PROMPT = """\
-你是一名资深测试架构师，专注于需求质量评审。
-你的任务是对需求进行测试可行性审查，识别歧义、缺口和风险，以 JSON 格式输出审查结果。
-
-## 输出格式（严格遵守）
-只输出 JSON 对象，不加 Markdown 标记或解释文字。
-
-{
-  "overall_quality": "good | needs_clarification | poor",
-  "score": 85,
-  "ambiguities": [
-    {
-      "id": "A001",
-      "location": "F001",
-      "description": "歧义描述（具体指出模糊之处）",
-      "suggestion": "建议澄清方式"
-    }
-  ],
-  "gaps": [
-    {
-      "id": "G001",
-      "description": "缺口描述（缺少什么信息）",
-      "impact": "对测试的影响",
-      "question": "需要向产品/开发确认的具体问题？"
-    }
-  ],
-  "risks": [
-    {
-      "area": "风险区域",
-      "level": "high | medium | low",
-      "description": "风险描述",
-      "mitigation": "测试应对策略"
-    }
-  ],
-  "suggestions": [
-    "改进建议1",
-    "改进建议2"
-  ]
-}
-
-## 评分标准（overall_quality & score）
-- good（80-100）：验收标准清晰可测、无明显缺口、风险已识别并有应对
-- needs_clarification（50-79）：有歧义或缺口但可通过澄清解决
-- poor（0-49）：关键信息缺失、无法开始测试设计
-
-## 审查重点
-1. 验收标准是否具体可验证（避免"正常显示"、"响应快"等）
-2. 是否覆盖了错误场景和边界条件
-3. 权限和角色是否明确
-4. 状态转换是否完整（是否有孤立状态）
-5. 数据字段约束是否完整（类型、范围、必填性）
-6. 是否有隐含的技术依赖未说明
-"""
-
-_USER_TEMPLATE_WITH_IR = """\
-以下是已解析的 RequirementIR（JSON 格式），请对其进行质量审查：
-
-{ir_json}
-
-模块：{module}
-
-请输出 ReviewResult JSON。
-"""
-
-_USER_TEMPLATE_RAW = """\
-以下是需求文档原文，请从测试视角进行质量审查：
-
-{requirement}
-
-模块：{module}
-
-请输出 ReviewResult JSON。
-"""
 
 
 class RequirementReviewerTool(BaseTool):
@@ -144,9 +69,13 @@ class RequirementReviewerTool(BaseTool):
             max_tokens if max_tokens is not None
             else int(cfg.get("max_tokens", 4096))
         )
-        self._system_prompt = (
-            system_prompt or cfg.get("system_prompt", "") or _SYSTEM_PROMPT
+        prompt = require_prompt_fields(
+            "requirement_reviewer",
+            ["system_prompt", "user_template_with_ir", "user_template_raw"],
         )
+        self._system_prompt = system_prompt or prompt["system_prompt"]
+        self._user_template_with_ir = prompt["user_template_with_ir"]
+        self._user_template_raw = prompt["user_template_raw"]
         self._artifacts = LocalArtifactRepository(base_dir=str(self._default_output_dir))
 
     @property
@@ -249,7 +178,7 @@ class RequirementReviewerTool(BaseTool):
             )
         else:
             module = module.strip() or "需求评审"
-            user_content = _USER_TEMPLATE_RAW.format(
+            user_content = self._user_template_raw.format(
                 requirement=requirement.strip(), module=module
             )
 
@@ -267,6 +196,19 @@ class RequirementReviewerTool(BaseTool):
         # 解析 ReviewResult
         review = ReviewResult.from_llm_json(response.content)
         if review is None:
+            # Debug: try to see WHY parsing failed
+            import json as _json
+            try:
+                data = _json.loads(response.content)
+                ReviewResult.model_validate(data)
+                logger.warning("reviewer_json_still_failed_after_reparse")
+            except _json.JSONDecodeError as _e:
+                logger.warning("reviewer_json_syntax_error",
+                    module=module, error=str(_e),
+                    raw=response.content[max(0,_e.pos-30):_e.pos+30])
+            except Exception as _ve:
+                logger.warning("reviewer_pydantic_validation_error",
+                    module=module, error=str(_ve)[:200])
             logger.warning(
                 "requirement_reviewer_parse_failed",
                 module=module,
@@ -361,7 +303,7 @@ class RequirementReviewerTool(BaseTool):
             ir_for_llm = ir.model_dump(
                 exclude={"version", "generated_at", "source_length", "has_kb_context"}
             )
-            content = _USER_TEMPLATE_WITH_IR.format(
+            content = self._user_template_with_ir.format(
                 ir_json=json.dumps(ir_for_llm, ensure_ascii=False, indent=2),
                 module=resolved_module,
             )
@@ -369,7 +311,7 @@ class RequirementReviewerTool(BaseTool):
         except Exception:
             # 兜底：按原始文本处理
             resolved_module = module.strip() or "需求评审"
-            content = _USER_TEMPLATE_RAW.format(
+            content = self._user_template_raw.format(
                 requirement=raw, module=resolved_module
             )
             return None, resolved_module, content
@@ -386,14 +328,14 @@ class RequirementReviewerTool(BaseTool):
             ir_for_llm = ir.model_dump(
                 exclude={"version", "generated_at", "source_length", "has_kb_context"}
             )
-            content = _USER_TEMPLATE_WITH_IR.format(
+            content = self._user_template_with_ir.format(
                 ir_json=json.dumps(ir_for_llm, ensure_ascii=False, indent=2),
                 module=resolved_module,
             )
             return ir, resolved_module, content
         except Exception:
             resolved_module = module.strip() or "需求评审"
-            content = _USER_TEMPLATE_RAW.format(
+            content = self._user_template_raw.format(
                 requirement=ir_json,
                 module=resolved_module,
             )

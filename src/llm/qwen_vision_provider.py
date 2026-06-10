@@ -20,34 +20,11 @@ from pathlib import Path
 from src.core.config import get_config
 from src.core.exceptions import LLMError
 from src.core.logging import get_logger
+from src.core.prompt_loader import require_prompt_fields
 
 logger = get_logger(__name__)
 
 _DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-_DEFAULT_SCREEN_PROMPT = """\
-请分析这个Android应用截图，识别所有可见的UI元素。
-
-只输出JSON对象，不加任何Markdown标记：
-{
-  "page_name": "页面名称（如：登录页、首页、商品详情页）",
-  "elements": [
-    {
-      "type": "button|input|text|image|list_item|tab|checkbox|icon",
-      "text": "元素上的文字（无则填空字符串）",
-      "description": "语义描述（如：登录按钮、用户名输入框）",
-      "position": (
-        "top_left|top_center|top_right|center_left|center"
-        "|center_right|bottom_left|bottom_center|bottom_right"
-      )
-    }
-  ]
-}
-
-注意：
-- 只列出对测试有意义的元素（可点击的、有文字的、可输入的）
-- position 描述元素在屏幕上的大致位置
-"""
 
 
 class QwenVisionProvider:
@@ -78,7 +55,10 @@ class QwenVisionProvider:
         self._screen_prompt = (
             screen_prompt
             or cfg.get("screen_description_prompt", "")
-            or _DEFAULT_SCREEN_PROMPT
+            or require_prompt_fields(
+                "qwen_vision_screen",
+                ["screen_prompt"],
+            )["screen_prompt"]
         )
         self._max_tokens = int(cfg.get("max_tokens", max_tokens))
         self._client = None

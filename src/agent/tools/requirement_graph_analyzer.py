@@ -45,6 +45,7 @@ from pathlib import Path
 from src.agent.base_tool import BaseTool
 from src.agent.tool_result import ToolExecutionResult
 from src.core.logging import get_logger
+from src.core.prompt_loader import require_prompt_fields
 from src.domain.artifacts import ArtifactKind
 from src.domain.requirements import RequirementAnalysisData
 from src.llm.base import BaseLLM
@@ -56,169 +57,6 @@ logger = get_logger(__name__)
 _DEFAULT_OUTPUT_DIR = "./outputs/requirements"
 _EVIDENCE_SOURCES = {"prd", "confirmation"}
 _VALIDATION_RETRY_LIMIT = 1
-
-# ── LLM 提示词 ───────────────────────────────────────────────────────────────
-
-_SYSTEM_PROMPT = """\
-你是一名资深软件测试工程师，专注于从测试视角分析需求文档。
-你的任务是将需求文档解析为结构化的 RequirementGraph（需求图谱），以 JSON 格式输出。
-
-## 信息优先级（非常重要）
-- 当前输入的【需求文档内容】是唯一的业务事实来源。
-- 知识库背景只用于识别回归风险、历史差异和可能需要澄清的问题。
-- 当知识库背景与需求文档冲突时，必须以需求文档为准。
-- 不得把知识库中的历史位置、登录态、分页、文案、跳转等行为写入
-  features、state_transitions 或测试策略，除非需求文档明确写到。
-- 如果知识库内容看起来与需求文档不一致，只能放入 risks 或
-  clarifications，并说明“历史逻辑可能冲突”，不能当作新需求。
-- 知识库中的旧页面、旧功能、旧登录态、旧分页、旧跳转、旧文案只能用于
-  “历史功能 / 历史差异 / 回测范围”分析，不得写入 features。
-
-## 事实证据规则（非常重要）
-- features 中的 description、每一条 boundaries，以及 state_transitions 中的
-  每一条 transitions，都必须能追溯到需求文档或用户确认答复。
-- test_focus、risks、test_strategy 是测试视角推导字段，不要求逐字 evidence；
-  但它们不能引入新的产品功能事实。
-- 每个 feature 必须提供 evidence 数组。evidence 只能使用以下 source：
-  - "prd"：quote 必须逐字摘自【需求文档内容】
-  - "confirmation"：quote 必须逐字摘自【用户确认补充】
-- evidence.field 必须指向被证明的字段，例如：
-  - "description"
-  - "boundaries[0]"
-- quote 必须是原文短句，不能改写、概括或补写。
-- 如果某个功能、边界、状态、文案、默认值、重试、缓存、空态、接口策略等
-  在需求文档和用户确认答复中找不到逐字或明确依据，不得写入 features；
-  应写入 clarifications 向用户确认。
-- 知识库、历史测试用例、Bug、XMind 不能作为 features 的 evidence。
-
-## V1 测试范围收敛
-- 本阶段只服务功能测试和 UI 自动化测试。
-- 不生成接口测试、埋点测试、配置专项测试。
-- 需求文档中的“接口字段建议”“数据字段建议”“配置能力建议”“埋点需求”
-  仅作为理解功能展示、页面状态和用户操作的背景，不要拆成独立 feature。
-- features 必须聚焦：页面展示、用户点击、状态变化、页面跳转、UI 文案、
-  按钮/入口、模块显示隐藏、空态/异常态、UI 自动化可验证点。
-- test_focus 应优先表达 UI 自动化可验证点，例如页面入口、按钮文案、
-  点击动作、跳转目标、空态文案、模块显示/隐藏。
-
-## 输出格式（严格遵守）
-只输出 JSON 对象，不加任何 Markdown 标记或解释文字。
-
-JSON 结构如下：
-{
-  "summary": "一句话描述本次需求的核心功能（30字以内）",
-  "actors": ["参与角色1", "参与角色2"],
-  "features": [
-    {
-      "id": "F001",
-      "name": "功能名称",
-      "description": "功能描述（面向测试人员，说明做什么、何时触发、对谁生效）",
-      "priority": "P0",
-      "risk_level": "high",
-      "risk_reason": "高风险时必填，说明原因",
-      "boundaries": ["边界条件1", "边界条件2"],
-      "test_focus": ["测试重点1", "测试重点2"],
-      "dependencies": ["F002"],
-      "evidence": [
-        {
-          "field": "description",
-          "source": "prd",
-          "quote": "需求文档中的逐字原文短句"
-        },
-        {
-          "field": "boundaries[0]",
-          "source": "confirmation",
-          "quote": "用户确认答复中的逐字原文短句"
-        }
-      ]
-    }
-  ],
-  "state_transitions": [
-    {
-      "entity": "数据实体名（如：订单、账户、内容）",
-      "states": ["状态A", "状态B", "状态C"],
-      "transitions": [
-        {
-          "from": "状态A",
-          "to": "状态B",
-          "trigger": "触发事件",
-          "condition": "前提条件（无则填空字符串）"
-        }
-      ],
-      "evidence": [
-        {
-          "field": "transitions[0]",
-          "source": "prd",
-          "quote": "需求文档中的逐字原文短句"
-        }
-      ]
-    }
-  ],
-  "risks": [
-    {
-      "area": "风险区域",
-      "level": "high",
-      "description": "风险详细描述",
-      "suggestion": "测试应对建议"
-    }
-  ],
-  "clarifications": [
-    {
-      "id": "Q001",
-      "question": "具体问题（以问号结尾）",
-      "context": "问题来源的需求上下文",
-      "impact": "若不澄清对测试的影响",
-      "blocking": true
-    }
-  ],
-  "test_strategy": {
-    "scope": "测试范围说明",
-    "focus_areas": ["重点测试区域1"],
-    "exclusions": ["明确排除的内容（无则为空数组）"],
-    "suggestion": "整体测试策略建议（100字以内）"
-  }
-}
-
-## 分析原则
-- features：将需求中每个独立的用户操作或系统行为拆为一个 feature
-  - priority：P0=核心主流程，P1=重要功能，P2=边缘/辅助功能
-  - risk_level：high=复杂逻辑/并发/权限/安全/金融，medium=一般功能，low=纯展示
-- state_transitions：识别有明显状态变化的业务实体（订单、账户、内容审核状态等）
-  - 每条 transitions 都必须有 evidence，且 evidence quote 必须来自需求文档或用户确认答复
-- risks：至少包含2个，按 level 降序排列
-- clarifications：需求模糊、缺失、矛盾之处，列出具体可回答的问题
-  - blocking=true：会影响当前功能事实确认，confirmed 阶段必须先向用户确认
-  - blocking=false：不影响当前功能事实确认，仅作为后续优化或测试关注点
-- 结合知识库背景信息，对比现有功能逻辑，重点标注变更点和潜在回归风险；
-  但所有功能点必须能在需求文档中找到依据
-- confirmed 阶段如果仍有关键逻辑不清楚，必须输出 blocking=true 的
-  clarifications，不要把推测写入 features
-- test_strategy.focus_areas 必须包含“UI 自动化优先覆盖主流程”；
-  无法稳定自动化的视觉/设计验收点只作为人工检查建议
-- 不要把接口字段、配置能力、埋点字段写成独立测试范围
-"""
-
-_USER_TEMPLATE = """\
-需求文档内容：
-{requirement}
-
-模块名称：{module}
-
-{kb_section}
-请对上述需求进行完整分析，输出 RequirementGraph JSON。
-"""
-
-_KB_SECTION_TEMPLATE = """\
-【历史知识库参考（辅助）】
-以下是知识库中的历史功能逻辑 / 测试用例 / 缺陷记录，请仅用于识别历史差异、\
-回归风险和回测范围。
-注意：知识库不是本次需求的事实来源；若与需求文档冲突，必须以需求文档为准。
-不得把知识库中的功能写入 features，除非需求文档明确描述了同一功能。
-
-{context}
-
----
-"""
 
 
 class RequirementGraphAnalyzerTool(BaseTool):
@@ -255,7 +93,13 @@ class RequirementGraphAnalyzerTool(BaseTool):
             max_tokens if max_tokens is not None
             else int(cfg.get("max_tokens", 8192))
         )
-        self._system_prompt = system_prompt or cfg.get("system_prompt", "") or _SYSTEM_PROMPT
+        prompt = require_prompt_fields(
+            "requirement_graph_analyzer",
+            ["system_prompt", "user_template", "kb_section_template"],
+        )
+        self._system_prompt = system_prompt or prompt["system_prompt"]
+        self._user_template = prompt["user_template"]
+        self._kb_section_template = prompt["kb_section_template"]
         self._artifacts = LocalArtifactRepository(base_dir=str(self._default_output_dir))
 
     @property
@@ -337,11 +181,11 @@ class RequirementGraphAnalyzerTool(BaseTool):
 
         # 1. 构建 LLM prompt
         kb_section = (
-            _KB_SECTION_TEMPLATE.format(context=kb_context.strip())
+            self._kb_section_template.format(context=kb_context.strip())
             if kb_context.strip()
             else ""
         )
-        user_content = _USER_TEMPLATE.format(
+        user_content = self._user_template.format(
             kb_section=kb_section,
             requirement=requirement.strip(),
             module=module,

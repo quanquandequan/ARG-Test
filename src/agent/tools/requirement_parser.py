@@ -38,7 +38,7 @@ class RequirementParserTool(BaseTool):
         self._default_output_dir = Path(
             output_dir or cfg.get("output_dir", _DEFAULT_OUTPUT_DIR)
         )
-        self._system_prompt = system_prompt or cfg.get("system_prompt", "") or None
+        self._system_prompt = system_prompt or None
         self._builder = RequirementIRBuilder(
             llm=llm,
             system_prompt=self._system_prompt,

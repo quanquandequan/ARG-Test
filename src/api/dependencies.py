@@ -6,6 +6,7 @@ from functools import lru_cache
 from src.agent.react_loop import ReActAgent
 from src.agent.tool_factory import build_agent_tools
 from src.core.config import get_config
+from src.core.prompt_loader import require_prompt_fields
 from src.embedding.factory import get_embedder
 from src.ingestion.chunker import ChineseChunker
 from src.ingestion.cleaner import TextCleaner
@@ -104,8 +105,15 @@ def get_agent(profile_name=None):
         driver_manager=_driver_manager(), page_cache=_page_cache(),
         loader=_loader(), cleaner=_cleaner())
 
+    system_prompt_id = cfg_agent.get("system_prompt_id") or cfg_agent.get("prompt_id")
+    system_prompt = (
+        require_prompt_fields(str(system_prompt_id), ["system_prompt"])["system_prompt"]
+        if system_prompt_id
+        else cfg_agent.get("system_prompt", "") or ""
+    )
+
     return ReActAgent(llm=_llm(), tools=tools,
-        system_prompt=cfg_agent.get("system_prompt", "") or "",
+        system_prompt=system_prompt,
         max_iterations=int(cfg_agent.get("max_iterations", 10)),
         max_history_tokens=int(cfg_agent.get("max_history_tokens", 4000)))
 

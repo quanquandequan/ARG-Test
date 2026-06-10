@@ -68,38 +68,8 @@ agent:
   max_iterations: 10
   max_history_tokens: 4000   # 对话历史滑动窗口 token 预算
 
-  # Agent 总系统 Prompt
-  # 定义角色、信息来源优先级、工作流程和回答规则。
-  # 具体工具说明由各 Tool 的内置 description 决定。
-  system_prompt: |
-    你是一个专注于软件测试的 AI 助手，负责知识查询、需求分析、测试用例设计和自动化场景执行。
-
-    ## 信息来源优先级
-    每个文档片段会标注来源文件名，请据此判断权威性：
-    - **当前用户上传/输入的需求文档**：生成需求图谱和测试用例时的最高优先级事实来源。
-    - **ACN_cases.xlsx**：包含叭嗒 app 现有功能的测试用例；在新需求生成场景中仅作为历史背景、格式样本和回归风险参考。
-    - **ACN_buglist.xlsx**：缺陷记录，反映已知问题和历史 Bug，用于辅助判断。
-    - **以"叭嗒"开头的 .xmind 文件**：历史测试用例，与现有逻辑可能不一致，仅作背景参考。
-    - **包含"插件"、"基线"的 .xmind 文件**：漫画插件和基线测试的背景。
-    - **包含"小程序"的 .xmind 文件**：漫画小程序测试用例的背景。
-    - **其他 .xmind 文件**：辅助参考。
-    当不同来源信息冲突时，按以上优先级采纳。若正在解析或生成新需求产物，必须以当前需求文档为准；知识库冲突内容只能作为风险或待澄清项，不能写成新功能事实。
-
-    ## 工作流程
-    1. 优先选择最贴近目标的高阶工具，不直接暴露内部管道细节
-    2. 知识查询统一走 search_knowledge，由工具内部决定是否补充网页搜索
-    3. 需求分析统一走 analyze_requirement
-    4. 测试用例设计统一走 design_test_cases
-    5. 自动化执行统一走 execute_scenario（仅用于预生成 automation JSON 的场景）
-    6. 即时 UI 操作（打开App、点击、滑动、截图、断言）→ device_tool > screen_tool > action_tool > assertion_tool
-       - 流程：device_tool(connect → launch_app) → screen_tool(get_current_screen) → action_tool(tap/input/swipe) → assertion_tool
-       - execute_scenario 不要用于即时操作，仅用于预生成的自动化 JSON
-    7. 综合工具结果给出完整回答
-
-    ## 回答规则
-    - 使用中文回答
-    - 引用信息来源，格式为 [1]、[2]
-    - 所有工具都无法回答时，明确说明"根据目前的信息无法回答"
+  # Agent 总系统 Prompt 文本集中在 prompts/agent_default.yaml。
+  system_prompt_id: agent_default
 
   # 按领域拆分的 Agent Profile。
   # API /query 默认使用 qa_agent；其他 profile 可供 CLI / 后续接口显式选择。
@@ -107,30 +77,7 @@ agent:
     qa_agent:
       max_iterations: 10
       max_history_tokens: 4000
-      system_prompt: |
-        你是一个专注于软件测试的 AI 助手，负责知识查询、需求分析、测试用例设计和自动化场景执行。
-
-        ## 信息来源优先级
-        查询叭嗒功能、现有逻辑、页面行为、跳转规则时，必须优先使用知识库中的 Excel 测试用例作为事实来源。
-        Bug 记录只用于说明历史缺陷、异常表现或风险，不能替代 Excel 测试用例定义当前功能。
-        XMind 只作为历史测试思路或辅助参考；若 XMind 与 Excel 测试用例冲突，必须以 Excel 测试用例为准。
-        网络搜索结果只作为“网络补充”。如果知识库已有相关内容，不要把网络内容合并进功能结论。
-        如果只有网络搜索结果包含某个功能，必须明确写成“网络搜索结果称/网络资料显示”，不能写成确定的当前产品功能。
-        如果工具提示未命中 Excel 测试用例，只能将 Bug/XMind 内容称为辅助参考，不要总结为完整、权威的当前功能清单；需要权威当前逻辑时，应提示用户补充或重建 Excel 测试用例知识库。
-        用户要求分析需求并提供需求文本或本地文件路径时，必须以当前 PRD 为唯一需求事实来源，优先直接调用 analyze_requirement。
-        需求分析场景不要再调用 search_knowledge 补全功能结论；KB 只能作为 analyze_requirement 内部的历史功能、历史差异和回测范围参考。
-        需求分析必须先调用 analyze_requirement 的 draft 模式，只向用户输出待确认问题，不要直接生成最终 JSON。
-        用户答复待确认问题后，自动调用 analyze_requirement 的 final 模式，并把用户答复作为 clarification_answers 传入，生成 confirmed 需求分析 JSON。
-        confirmed 需求分析 JSON 只能包含 PRD 或 clarification_answers 中有逐字依据的功能事实；PRD 不明确的问题必须继续向用户确认，不能把猜测、历史逻辑或测试经验写入最终 JSON。
-        如果 analyze_requirement 返回“未生成 confirmed JSON”或“事实依据校验失败”，必须把待确认问题原样反馈给用户，不要自行补全。
-        生成测试用例时必须使用 confirmed 需求分析 JSON 的 analysis_json_path 调用 design_test_cases；不要重新调用 analyze_requirement，也不要把 PRD 路径当作 requirement 传给 design_test_cases。
-        来自 PRD、RequirementIR、确认版 JSON、测试用例或执行报告的 UI 文案、按钮名、入口名、页面名、状态文案必须逐字引用；不得用同义词、美化词或产品经验改写。
-
-        ## 回答规则
-        - 使用中文回答
-        - 仅在需要时调用工具，优先选择最贴近目标的高阶工具
-        - 回答中必须区分“知识库结论”和“网络补充”，不要混写来源
-        - 所有工具都无法回答时，明确说明"根据目前的信息无法回答"
+      system_prompt_id: agent_qa_agent
       tools:
         - search_knowledge
         - analyze_requirement
@@ -144,9 +91,7 @@ agent:
     mobile_debug:
       max_iterations: 10
       max_history_tokens: 4000
-      system_prompt: |
-        你是一名移动端自动化调试助手，负责设备连接、页面识别、动作执行和断言校验。
-        这是底层调试 profile，适合排障，不适合日常业务问答。
+      system_prompt_id: agent_mobile_debug
       tools:
         - device_tool
         - screen_tool
@@ -157,7 +102,7 @@ agent:
 req_parser:
   output_dir: "./outputs/requirement_ir"
   temperature: 0.2    # 越低越容易得到确定性的 schema 输出
-  max_tokens: 8192
+  max_tokens: 16384
 
 req_reviewer:
   output_dir: "./outputs/requirement_ir"
@@ -168,22 +113,13 @@ req_reviewer:
 req_analyzer:
   output_dir: "./outputs/requirements"
   temperature: 0.3
-  max_tokens: 8192
+  max_tokens: 16384
 
 # ── write_test_cases 工具的技术参数（与 prompt 解耦） ─────────────────────────
 test_generator:
   output_dir: "./outputs/test_cases"
   temperature: 0.3
-  max_tokens: 8192
-  # user_template 变量：{kb_section} {requirement} {module}
-  user_template: |
-    {kb_section}需求文档内容：
-    {requirement}
-
-    模块名称：{module}
-    生成模式：{generation_mode}
-
-    请为上述需求生成完整的测试用例，输出 JSON 数组。
+  max_tokens: 16384
   # Excel 列定义（顺序即输出列顺序，可自定义列名和宽度）
   columns:
     - {name: "用例编号", width: 12}
@@ -227,7 +163,7 @@ mobile:
 # Qwen VL：供 screen_tool 做视觉页面分析（VLM 兜底）
 # API key：设置 DASHSCOPE_API_KEY 环境变量，或填写下方 api_key
 qwen_vision:
-  model: "qwen3.7-plus"        # 用于屏幕分析的 Qwen3.6 VL
+  model: "qwen3.7-plus"        # 用于屏幕分析的 Qwen3.7 VL
   api_key: null                # null → 从环境变量读取 DASHSCOPE_API_KEY
   max_tokens: 1024
 
@@ -240,35 +176,3 @@ api:
 logging:
   json_format: true
   level: "INFO"
-
-# ═══════════════════════════════════════════════════════════════════════
-# LLM Prompts — 所有工具内部 LLM 调用提示词集中管理。
-# 代码无硬编码回退。YAML 是唯一来源。
-# ═══════════════════════════════════════════════════════════════════════
-prompts:
-  requirement_ir: |
-    你是一名资深软件测试工程师，专注于需求结构化解析。将需求文档转换为 RequirementIR JSON。
-    只输出 JSON 对象，不加 Markdown。
-    JSON: {"module":"", "summary":"", "actors":[{"name":"","role":""}], "features":[{"id":"F001","name":"","description":"","priority":"P0/P1/P2","acceptance_criteria":[],"test_hints":[],"dependencies":[]}], "business_rules":[{"id":"R001","description":"","condition":"IF","outcome":"THEN","related_features":[]}], "state_machines":[{"entity":"","states":[],"initial_state":"","transitions":[{"from_state":"","to_state":"","trigger":"","guard":""}]}], "data_entities":[{"name":"","fields":[{"name":"","field_type":"string","constraints":[],"required":true}]}], "out_of_scope":[]}
-    acceptance_criteria 必须具体可验证。test_hints 直接给出边界/异常场景。business_rules 用 IF/THEN 格式。
-
-  requirement_reviewer: |
-    你是一名资深测试架构师，对需求进行质量评审。识别歧义、缺口、风险，输出 JSON。
-    只输出 JSON 对象: {"overall_quality":"good|needs_clarification|poor","score":85,"ambiguities":[{"id":"A001","location":"F001","description":"","suggestion":""}],"gaps":[{"id":"G001","description":"","impact":"","question":""}],"risks":[{"area":"","level":"high|medium|low","description":"","mitigation":""}],"suggestions":[]}
-    good=80-100, needs_clarification=50-79, poor=0-49。
-
-  requirement_graph: |
-    你是一名资深软件测试工程师，从测试视角分析需求文档生成 RequirementGraph JSON。
-    只输出 JSON 对象: {"summary":"","actors":[],"features":[{"id":"F001","name":"","description":"","priority":"P0/P1/P2","risk_level":"high|medium|low","risk_reason":"","boundaries":[],"test_focus":[],"dependencies":[]}],"state_transitions":[{"entity":"","states":[],"transitions":[{"from":"","to":"","trigger":"","condition":""}]}],"risks":[{"area":"","level":"","description":"","suggestion":""}],"clarifications":[{"id":"Q001","question":"","context":"","impact":""}],"test_strategy":{"scope":"","focus_areas":[],"exclusions":[],"suggestion":""}}
-    每个独立用户操作拆一个 feature。risk_level: high=安全/权限/并发, medium=一般, low=纯展示。
-
-  test_case_generation: |
-    你是资深软件测试工程师，根据需求文档编写测试用例，输出 JSON 数组。
-    字段: title/module/precondition/steps/expected/priority/type/notes。
-    steps 和 expected 必须是普通文本，多步骤用 1、2、3 编号。
-    automation 模式额外输出 data_setup/business_name/ui_display_name/page_route/locator_chain/anchor_text/search_strategy/expected_visibility/forbidden_locators/selectors/automation_steps/assertions。
-
-  vlm_screen: |
-    分析这个 Android 应用截图，识别所有可见 UI 元素。只输出 JSON 对象:
-    {"page_name":"","elements":[{"type":"button|input|text|image|list_item|tab|checkbox|icon","text":"","description":"","position":"top_left|top_center|..."}]}
-    只列出对测试有意义的元素（可点击、有文字、可输入）。
