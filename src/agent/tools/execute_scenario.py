@@ -26,8 +26,8 @@ class ExecuteScenarioTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "执行结构化自动化场景或自动化测试用例。"
-            "仅接受自动化 JSON 路径作为输入，可选指定 case_id 或 case_title。"
+            "执行已生成的自动化用例 JSON，并输出执行报告。"
+            "仅接受 automation_json_path 作为执行输入；不生成新用例。"
         )
 
     @property
@@ -92,6 +92,18 @@ class ExecuteScenarioTool(BaseTool):
             return ToolExecutionResult(content="错误：请提供 automation_json_path。")
 
         try:
+            import json
+            from pathlib import Path
+
+            payload = json.loads(Path(automation_json_path.strip()).read_text(encoding="utf-8"))
+            if _looks_like_analysis_graph_json(payload):
+                return ToolExecutionResult(
+                    content=(
+                        "错误：当前输入是确认版需求分析 JSON，请改用 design_test_cases 生成用例；"
+                        "execute_scenario 只接受自动化用例 JSON。"
+                    )
+                )
+
             result = await self._workflow.execute(
                 ScenarioExecutionRequest(
                     automation_json_path=automation_json_path,
@@ -142,3 +154,16 @@ class ExecuteScenarioTool(BaseTool):
                 "output_dir": output_dir.strip(),
             },
         )
+
+
+
+def _looks_like_analysis_graph_json(payload: dict) -> bool:
+    """识别 confirmed req_graph.json。"""
+    if not isinstance(payload, dict):
+        return False
+    if not isinstance(payload.get("features"), list):
+        return False
+    meta = payload.get("_meta")
+    if not isinstance(meta, dict):
+        return False
+    return str(meta.get("analysis_status", "")).strip().lower() == "confirmed"

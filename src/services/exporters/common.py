@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from src.domain.requirements import GeneratedTestCase
+from src.domain.test_design.generated_test_case import GeneratedTestCase
 
 DEFAULT_COLUMNS = [
     ("用例编号", 12),

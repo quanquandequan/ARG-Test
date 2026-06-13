@@ -11,7 +11,7 @@ from pathlib import Path
 from src.core.logging import get_logger
 from src.domain.artifacts import ArtifactKind, ArtifactRecord
 from src.domain.requirement import Feature, RequirementIR
-from src.domain.requirements import (
+from src.domain.test_design.generation import (
     TestCaseGenerationData,
     TestCaseGenerationRequest,
     TestCaseGenerationResult,
@@ -220,18 +220,20 @@ class TestCaseGenerationWorkflow:
         artifact = _require_artifact(generation)
         out_dir = Path(output_dir.strip()) if output_dir.strip() else self._default_output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
-        xlsx_path = out_dir / _build_filename(generation.module, generation.generation_mode)
-        self._excel_exporter.export(artifact, xlsx_path)
-        workbook = _record_for_path(ArtifactKind.TEST_CASES_XLSX, xlsx_path)
 
+        workbook = None
         automation_json = None
         if generation.generation_mode == "automation":
-            json_path = xlsx_path.with_suffix(".json")
+            json_path = out_dir / _build_json_filename(generation.module)
             self._json_exporter.export(artifact, json_path)
             automation_json = _record_for_path(
                 ArtifactKind.TEST_CASES_AUTOMATION_JSON,
                 json_path,
             )
+        else:
+            xlsx_path = out_dir / _build_filename(generation.module, generation.generation_mode)
+            self._excel_exporter.export(artifact, xlsx_path)
+            workbook = _record_for_path(ArtifactKind.TEST_CASES_XLSX, xlsx_path)
 
         return TestCaseGenerationResult(
             generation=generation,
@@ -247,20 +249,8 @@ class TestCaseGenerationWorkflow:
         request_id: str = "",
     ) -> TestCaseGenerationResult:
         artifact = _require_artifact(generation)
-        workbook = self._artifacts.allocate(
-            ArtifactKind.TEST_CASES_XLSX,
-            generation.module,
-            ".xlsx",
-            metadata=_artifact_metadata(generation, request_id),
-            suffix="automation" if generation.generation_mode == "automation" else "",
-            directory=output_dir.strip() or None,
-        )
-        self._excel_exporter.export(artifact, workbook.path)
-        workbook = self._artifacts.finalize(
-            workbook,
-            metadata={"kb_samples_used": bool(generation.kb_samples.strip())},
-        )
 
+        workbook = None
         automation_json = None
         if generation.generation_mode == "automation":
             automation_json = self._artifacts.allocate(
@@ -274,6 +264,20 @@ class TestCaseGenerationWorkflow:
             self._json_exporter.export(artifact, automation_json.path)
             automation_json = self._artifacts.finalize(
                 automation_json,
+                metadata={"kb_samples_used": bool(generation.kb_samples.strip())},
+            )
+        else:
+            workbook = self._artifacts.allocate(
+                ArtifactKind.TEST_CASES_XLSX,
+                generation.module,
+                ".xlsx",
+                metadata=_artifact_metadata(generation, request_id),
+                suffix="",
+                directory=output_dir.strip() or None,
+            )
+            self._excel_exporter.export(artifact, workbook.path)
+            workbook = self._artifacts.finalize(
+                workbook,
                 metadata={"kb_samples_used": bool(generation.kb_samples.strip())},
             )
 
@@ -292,13 +296,22 @@ def render_generation_summary(
     workbook: ArtifactRecord | None = None,
     automation_json: ArtifactRecord | None = None,
 ) -> str:
-    positive = sum(1 for case in generation.cases if case.case_type in ("正向", "功能"))
+    # 兼容多种 case_type 命名：如“正向”“功能”“功能测试”等都视为正向/主流程类。
+    def _is_positive(case_type: str) -> bool:
+        text = str(case_type or "").strip()
+        return ("正向" in text) or ("功能" in text)
+
+    positive = sum(1 for case in generation.cases if _is_positive(case.case_type))
     negative = len(generation.cases) - positive
-    lines = ["已生成测试用例 Excel 文件："]
-    if workbook is not None:
-        lines.append(f"路径：{workbook.path}")
-    if automation_json is not None:
-        lines.append(f"自动化 JSON：{automation_json.path}")
+    lines = []
+    if generation.generation_mode == "automation":
+        lines.append("已生成自动化用例定义 JSON：")
+        if automation_json is not None:
+            lines.append(f"路径：{automation_json.path}")
+    else:
+        lines.append("已生成测试用例 Excel 文件：")
+        if workbook is not None:
+            lines.append(f"路径：{workbook.path}")
     lines += [
         f"模块：{generation.module}",
         f"生成模式：{generation.generation_mode}",
@@ -319,6 +332,13 @@ def _build_filename(module: str, generation_mode: str = "manual") -> str:
     safe_module = re.sub(r'[\\/:*?"<>|]', "_", module)
     mode_suffix = "_automation" if generation_mode == "automation" else ""
     return f"{safe_module}{mode_suffix}_{timestamp}.xlsx"
+
+
+def _build_json_filename(module: str) -> str:
+    """automation 模式直接导出 JSON，不再生成中间 Excel。"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_module = re.sub(r'[\\/:*?"<>|]', "_", module)
+    return f"{safe_module}_automation_{timestamp}.json"
 
 
 def _record_for_path(kind: ArtifactKind, path: Path) -> ArtifactRecord:

@@ -10,6 +10,7 @@ from src.agent.tools.requirement_graph_analyzer import RequirementGraphAnalyzerT
 from src.agent.tools.requirement_parser import RequirementParserTool
 from src.agent.tools.requirement_reviewer import RequirementReviewerTool
 from src.domain.artifacts import ArtifactKind, ArtifactRecord
+from src.domain.requirement import EnrichedRequirementIR
 from src.ingestion.cleaner import TextCleaner
 from src.ingestion.loader import DocumentLoader
 from src.llm.base import BaseLLM
@@ -181,25 +182,40 @@ class AnalyzeRequirementTool(BaseTool):
                 request_id=request_id,
             )
 
-        reviewer_result = await self._reviewer_tool.execute_typed(
-            ir_file="",
-            ir_json=parser_result.data.model_dump_json(),
-            requirement="",
-            module=resolved_module,
-            output_dir=output_dir,
-            request_id=request_id,
-            persist=False,
-        )
-        if reviewer_result.data is None:
-            return _failed_result(
-                "requirement_reviewer",
-                reviewer_result,
+        # draft 模式运行 reviewer 做质量评审；final 模式跳过（用户已确认）
+        if mode == "draft":
+            reviewer_result = await self._reviewer_tool.execute_typed(
+                ir_file="",
+                ir_json=parser_result.data.model_dump_json(),
+                requirement="",
+                module=resolved_module,
+                output_dir=output_dir,
                 request_id=request_id,
-                artifacts=[*parser_result.artifacts, *reviewer_result.artifacts],
+                persist=False,
+            )
+            if reviewer_result.data is None:
+                return _failed_result(
+                    "requirement_reviewer",
+                    reviewer_result,
+                    request_id=request_id,
+                    artifacts=[*parser_result.artifacts, *reviewer_result.artifacts],
+                )
+        else:
+            # final 模式：构造空的 reviewer 结果，跳过 LLM 评审
+            from src.domain.requirement.requirement_ir import ReviewResult
+            reviewer_result = ToolExecutionResult(
+                content="final 模式跳过评审",
+                data=ReviewResult(overall_quality="good", score=85),
             )
 
+        # 合并 parser 与 reviewer 的结果，避免 graph_analyzer 重新解析原始 PRD。
+        enriched_ir = EnrichedRequirementIR(
+            ir=parser_result.data,
+            review=reviewer_result.data,
+        )
+
         analyzer_result = await self._analyzer_tool.execute_typed(
-            requirement=requirement_input.content,
+            enriched_ir_json=enriched_ir.to_graph_analyzer_json(),
             kb_context=resolved_kb_context,
             module=resolved_module,
             output_dir=output_dir,

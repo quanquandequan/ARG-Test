@@ -33,9 +33,9 @@ class DesignTestCasesTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "根据已确认的需求分析 JSON 设计完整测试用例，并输出 Excel 文件。"
+            "根据已确认的需求分析 JSON 生成测试用例定义。"
             "必须先完成需求确认，传入 analysis_json_path。"
-            "支持 manual（人工测试用例）与 automation（移动端自动化用例）两种模式。"
+            "manual 生成人工测试用例；automation 生成自动化用例定义 JSON，仅生成不执行。"
         )
 
     @property
@@ -61,7 +61,7 @@ class DesignTestCasesTool(BaseTool):
                 "generation_mode": {
                     "type": "string",
                     "enum": ["manual", "automation"],
-                    "description": "生成模式：manual=人工测试用例，automation=自动化用例",
+                    "description": "生成模式：manual=人工测试用例，automation=自动化用例定义 JSON（仅生成，不执行）",
                 },
             },
             "required": ["analysis_json_path"],
@@ -102,14 +102,35 @@ class DesignTestCasesTool(BaseTool):
             )
 
         try:
-            result = await self._workflow.run_from_analysis_json(
-                analysis_json_path=analysis_json_path,
-                module=module,
+            import json
+            from pathlib import Path
+            from src.domain.test_design.generation import TestCaseGenerationRequest
+
+            graph_path = Path(analysis_json_path.strip())
+            if not graph_path.exists():
+                return ToolExecutionResult(content=f"分析 JSON 文件不存在：{analysis_json_path}")
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
+            if _looks_like_automation_cases_json(graph):
+                return ToolExecutionResult(
+                    content=(
+                        "错误：当前输入是自动化用例 JSON，请改用 execute_scenario 执行；"
+                        "design_test_cases 只接受确认版需求分析 JSON。"
+                    )
+                )
+
+            request = TestCaseGenerationRequest(
+                requirement=json.dumps(graph, ensure_ascii=False),
+                module=module or graph.get("_meta", {}).get("module", "通用"),
                 output_dir=output_dir or str(self._default_output_dir),
                 generation_mode=generation_mode,
                 system_prompt_override=self._system_prompt,
                 request_id=request_id,
-                use_artifact_repository=True,
+            )
+
+            result = self._workflow.export_to_artifacts(
+                await self._workflow.run_from_analysis_graph(graph, request),
+                output_dir=request.output_dir,
+                request_id=request.request_id,
             )
         except ValueError as exc:
             if "LLM 未能生成" in str(exc) or "错误：" in str(exc):
@@ -128,9 +149,10 @@ class DesignTestCasesTool(BaseTool):
             )
             raise
 
-        artifacts = [result.workbook_artifact]
-        if result.automation_json_artifact is not None:
-            artifacts.append(result.automation_json_artifact)
+        artifacts = [
+            a for a in (result.workbook_artifact, result.automation_json_artifact)
+            if a is not None
+        ]
         return ToolExecutionResult(
             content=result.summary,
             data=result.generation,
@@ -141,3 +163,17 @@ class DesignTestCasesTool(BaseTool):
                 "output_dir": output_dir.strip() or str(self._default_output_dir),
             },
         )
+
+
+
+def _looks_like_automation_cases_json(payload: dict) -> bool:
+    """识别 execute_scenario 消费的 automation JSON。"""
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("generation_mode", "")).strip().lower() != "automation":
+        return False
+    cases = payload.get("cases")
+    if not isinstance(cases, list) or not cases:
+        return False
+    first_case = cases[0]
+    return isinstance(first_case, dict) and "automation_steps" in first_case

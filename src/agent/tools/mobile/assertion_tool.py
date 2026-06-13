@@ -60,6 +60,10 @@ class AssertionTool(BaseTool):
                 "type": "string",
                 "description": "元素文字（assert_element / assert_clickable 的备选匹配方式）",
             },
+            "element_class": {
+                "type": "string",
+                "description": "元素 class name（assert_element / assert_clickable 的备选匹配方式）",
+            },
             "page": {
                 "type": "string",
                 "description": "期望的 Activity 名称或包含关键字（assert_page 使用）",
@@ -108,14 +112,20 @@ class AssertionTool(BaseTool):
         return await self._mgr.get_parsed_screen()
 
     async def _resolve_target(
-        self, parsed, element_id: str = "", element_text: str = ""
+        self,
+        parsed,
+        element_id: str = "",
+        element_text: str = "",
+        element_class: str = "",
     ):
-        """共享元素查找：先尝试 resource-id，再尝试模糊文本匹配。"""
+        """共享元素查找：先尝试 resource-id，再尝试文本和 class name。"""
         el = None
         if element_id:
             el = parsed.find_by_resource_id(element_id)
         if el is None and element_text:
             el = parsed.find_by_text(element_text)
+        if el is None and element_class:
+            el = parsed.find_by_class_name(element_class)
         return el
 
     async def _assert_text(
@@ -145,15 +155,16 @@ class AssertionTool(BaseTool):
         self,
         element_id: str = "",
         element_text: str = "",
+        element_class: str = "",
         require_clickable: bool = False,
         **_,
     ) -> str:
-        if not element_id and not element_text:
-            return f"{_FAIL} 必须提供 element_id 或 element_text 参数。"
+        if not element_id and not element_text and not element_class:
+            return f"{_FAIL} 必须提供 element_id、element_text 或 element_class 参数。"
 
         parsed = await self._get_parsed()
-        el = await self._resolve_target(parsed, element_id, element_text)
-        identifier = element_id or element_text
+        el = await self._resolve_target(parsed, element_id, element_text, element_class)
+        identifier = element_id or element_text or element_class
 
         if el is None or not el.is_visible:
             return f"{_FAIL} 未找到元素：{identifier}"

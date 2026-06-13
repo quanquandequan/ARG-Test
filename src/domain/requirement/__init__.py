@@ -1,31 +1,45 @@
 """Requirement domain models."""
 
+from src.domain.requirement.analysis import RequirementAnalysisData
 from src.domain.requirement.requirement_ir import (
     Actor,
+    AnalysisClarification,
+    AnalysisReport,
     Ambiguity,
     BusinessRule,
     DataEntity,
     DataField,
+    EnrichedRequirementIR,
     Feature,
     Gap,
     RequirementIR,
+    RiskEdge,
+    RiskGraph,
     ReviewResult,
     ReviewRisk,
     StateMachine,
     StateTransition,
+    TestScenario,
 )
 
 __all__ = [
+    "RequirementAnalysisData",
     "Actor",
+    "AnalysisClarification",
+    "AnalysisReport",
     "Ambiguity",
     "BusinessRule",
     "DataEntity",
     "DataField",
+    "EnrichedRequirementIR",
     "Feature",
     "Gap",
     "RequirementIR",
+    "RiskEdge",
+    "RiskGraph",
     "ReviewResult",
     "ReviewRisk",
     "StateMachine",
     "StateTransition",
+    "TestScenario",
 ]

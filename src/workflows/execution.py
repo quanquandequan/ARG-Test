@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ class ExecutionWorkflow:
             driver_manager=driver_manager,
             page_cache=page_cache,
         )
+        self._page_cache = page_cache
         self._assertion_tool = AssertionTool(driver_manager=driver_manager)
 
     async def execute(
@@ -90,7 +92,8 @@ class ExecutionWorkflow:
                 failure_reason="自动化用例缺少 automation_steps，无法执行。",
             )
 
-        for idx, step in enumerate(automation_steps, start=1):
+        for idx, raw_step in enumerate(automation_steps, start=1):
+            step = self._normalize_step(raw_step)
             tool_name = str(step.get("tool", "")).strip()
             action_name = str(step.get("action", "")).strip()
             result = await self._execute_step(step, request.app_package)
@@ -113,6 +116,38 @@ class ExecutionWorkflow:
                     request=request,
                     failure_reason=result,
                 )
+
+            if tool_name == "device_tool" and action_name == "launch_app":
+                # "已在前台" 说明 device_tool 跳过了 activate_app，无需等待 splash
+                app_already_foreground = "已在前台" in result
+                if not app_already_foreground:
+                    settle_result = await self._settle_post_launch_ui()
+                    if settle_result is not None:
+                        settle_success = _is_success(
+                            "device_tool",
+                            "settle_post_launch_ui",
+                            settle_result,
+                        )
+                        step_results.append(
+                            ExecutionStepResult(
+                                stage="setup",
+                                name="device_tool.settle_post_launch_ui",
+                                success=settle_success,
+                                detail=settle_result,
+                            )
+                        )
+                        if not settle_success:
+                            return await self._finalize(
+                                module=module,
+                                case_id=case_id,
+                                title=title,
+                                status="FAIL",
+                                steps=step_results,
+                                request=request,
+                                failure_reason=settle_result,
+                            )
+                    # 等待启动动画/广告页完全消失后再执行手势
+                    await asyncio.sleep(5.0)
 
         assertions = list(case.get("assertions") or [])
         for idx, assertion in enumerate(assertions, start=1):
@@ -164,6 +199,62 @@ class ExecutionWorkflow:
         if tool_name == "assertion_tool":
             return await self._assertion_tool.execute(**params)
         return f"错误：不支持的执行工具 {tool_name!r}。"
+
+    def _normalize_step(self, step: dict[str, Any]) -> dict[str, Any]:
+        """兼容历史生成产物中的动作别名和参数命名。"""
+        normalized = dict(step)
+        tool_name = str(normalized.get("tool", "")).strip()
+        action_name = str(normalized.get("action", "")).strip()
+
+        if tool_name == "screen_tool" and action_name == "capture_screenshot":
+            normalized["action"] = "get_screenshot"
+
+        if tool_name == "action_tool":
+            if "max_scrolls" in normalized and "max_swipes" not in normalized:
+                normalized["max_swipes"] = normalized.pop("max_scrolls")
+            target_type = str(normalized.get("target_type", "")).strip().lower()
+            if target_type in {"classname", "class_name", "locator"}:
+                normalized["target_type"] = "class"
+
+        return normalized
+
+    async def _settle_post_launch_ui(self) -> str | None:
+        """在业务步骤开始前，尽量收敛启动页/广告页。"""
+        await asyncio.sleep(2.0)  # 等待启动动画结束，1s 不够
+        for attempt in range(2):
+            parsed = await self._driver_manager.get_parsed_screen()
+            activity = await self._driver_manager.get_current_activity()
+            if not _looks_like_splash_screen(parsed, activity):
+                return None
+
+            close_element = _find_first_visible_text(parsed, _SPLASH_CLOSE_TEXTS)
+            if close_element is None:
+                visible_labels = "、".join(parsed.visible_labels(limit=6)) or "无明显文案"
+                return (
+                    "启动应用后仍停留在启动/广告页，且未找到可安全点击的关闭入口。"
+                    f"当前 Activity：{activity or '未知'}；"
+                    f"可见文案：{visible_labels}。"
+                )
+
+            tap_result = await self._action_tool.execute(
+                action="tap",
+                x=close_element.center[0],
+                y=close_element.center[1],
+            )
+            if not _is_success("action_tool", "tap", tap_result):
+                return f"启动页收敛失败：{tap_result}"
+            await asyncio.sleep(1.0)
+
+        parsed = await self._driver_manager.get_parsed_screen()
+        activity = await self._driver_manager.get_current_activity()
+        if _looks_like_splash_screen(parsed, activity):
+            visible_labels = "、".join(parsed.visible_labels(limit=6)) or "无明显文案"
+            return (
+                "启动页收敛后仍停留在启动/广告页。"
+                f"当前 Activity：{activity or '未知'}；"
+                f"可见文案：{visible_labels}。"
+            )
+        return "已自动关闭启动页干扰元素并进入业务页面。"
 
     async def _finalize(
         self,
@@ -274,6 +365,32 @@ def _is_success(tool_name: str, action_name: str, result: str) -> bool:
         return result.startswith("✅ PASS")
     failure_markers = ("错误", "失败", "未找到", "失效", "不可用")
     return not any(marker in result for marker in failure_markers)
+
+
+_SPLASH_ACTIVITY_KEYWORDS = ("splash", "launcher")
+_SPLASH_CLOSE_TEXTS = ("关闭", "跳过")
+_SPLASH_CTA_TEXTS = ("点击前往详情页",)
+
+
+def _looks_like_splash_screen(parsed, activity: str) -> bool:
+    """根据 activity 与页面文案判断当前是否仍停留在启动页。"""
+    normalized_activity = (activity or "").lower()
+    if any(keyword in normalized_activity for keyword in _SPLASH_ACTIVITY_KEYWORDS):
+        return True
+    if _find_first_visible_text(parsed, _SPLASH_CTA_TEXTS) is not None:
+        return True
+    if _find_first_visible_text(parsed, _SPLASH_CLOSE_TEXTS) is not None:
+        return True
+    return False
+
+
+def _find_first_visible_text(parsed, candidates: tuple[str, ...]):
+    """在当前页面上查找第一个匹配候选文案的可见元素。"""
+    for candidate in candidates:
+        element = parsed.find_by_text(candidate)
+        if element is not None and element.is_visible:
+            return element
+    return None
 
 
 def _build_metadata(request_id: str) -> dict:

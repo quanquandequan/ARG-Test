@@ -28,7 +28,7 @@ from src.domain.artifacts import ArtifactKind
 from src.llm.base import BaseLLM
 from src.llm.types import Message
 from src.services.artifact_repository import LocalArtifactRepository
-from src.services.requirement_ir import RequirementIR, ReviewResult
+from src.domain.requirement.requirement_ir import RequirementIR, ReviewResult
 
 logger = get_logger(__name__)
 

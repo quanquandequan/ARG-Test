@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from pathlib import Path
 
 from src.agent.base_tool import FINAL_ANSWER_PASSTHROUGH, BaseTool
 from src.agent.history import truncate_history
@@ -105,11 +106,57 @@ class ReActAgent:
             history or [], max_tokens=self._max_history_tokens
         )
         today = date.today().strftime("%Y-%m-%d")
+        route_hint = self._build_route_hint(query)
         dated_prompt = f"{self._system_prompt}\n\n当前日期: {today}"
+        if route_hint:
+            dated_prompt = f"{dated_prompt}\n\n{route_hint}"
         return (
             [Message(role="system", content=dated_prompt)]
             + truncated
             + [Message(role="user", content=query)]
+        )
+
+    def _build_route_hint(self, query: str) -> str:
+        """针对高频输入模式补充硬提示，减少 LLM 选错工具。"""
+        route = _detect_json_route(query)
+        if route == "design_test_cases":
+            return (
+                "【工具路由提示】当前用户输入的是 confirmed 需求分析 JSON 路径，"
+                "且目标是生成测试用例。此场景必须直接调用 design_test_cases，"
+                "不要先调用 search_knowledge，也不要调用 analyze_requirement。"
+            )
+        if route == "execute_scenario":
+            return (
+                "【工具路由提示】当前用户输入的是自动化用例 JSON 路径，"
+                "且目标是执行已有用例。此场景必须直接调用 execute_scenario，"
+                "不要调用 design_test_cases。"
+            )
+        return ""
+
+    def _build_direct_tool_call(self, query: str) -> ToolCall | None:
+        """对可明确识别的高频请求做硬路由，避免 LLM 选错工具。"""
+        route = _detect_json_route(query)
+        path_match = re.search(r"(?:/|\./|\.\./)[^\s]+\.json", (query or "").strip())
+        if route is None or path_match is None:
+            return None
+
+        if route == "execute_scenario":
+            return ToolCall(
+                id=f"direct-execute-{uuid.uuid4()}",
+                name="execute_scenario",
+                arguments={
+                    "automation_json_path": path_match.group(0),
+                },
+            )
+
+        generation_mode = "automation" if _is_automation_case_request(query) else "manual"
+        return ToolCall(
+            id=f"direct-design-{uuid.uuid4()}",
+            name="design_test_cases",
+            arguments={
+                "analysis_json_path": path_match.group(0),
+                "generation_mode": generation_mode,
+            },
         )
 
     # ── 工具执行辅助方法 ────────────────────────────────────────────────
@@ -158,6 +205,38 @@ class ReActAgent:
         steps: list[AgentStep] = []
         run_t0 = time.perf_counter()
         use_tools = bool(tool_defs)
+
+        direct_tool_call = self._build_direct_tool_call(query)
+        if direct_tool_call is not None:
+            yield _ToolCallEvent(tool_names=[direct_tool_call.name], iteration=0)
+            tc, result, dur_ms, final_answer_mode = await self._safe_execute(
+                direct_tool_call,
+                trace_id,
+            )
+            processing_stages[f"iter0.{tc.name}"] = round(dur_ms, 1)
+            steps.append(AgentStep(
+                step_index=0,
+                tool_call=tc,
+                tool_result=result,
+                duration_ms=round(dur_ms, 1),
+            ))
+            yield _ToolResultEvent(
+                tool_name=tc.name,
+                result=result,
+                duration_ms=round(dur_ms, 1),
+                tool_call=tc,
+                final_answer_mode=final_answer_mode,
+            )
+            total_ms = (time.perf_counter() - run_t0) * 1000
+            processing_stages["total"] = round(total_ms, 1)
+            yield _FinalAnswer(
+                text=result,
+                iteration=0,
+                citations=self._extract_citations(result),
+                processing_stages=processing_stages,
+                steps=steps,
+            )
+            return
 
         for i in range(self._max_iterations):
             iter_t0 = time.perf_counter()
@@ -411,3 +490,46 @@ class ReActAgent:
         for match in re.finditer(r"\[(\d+)\]", text):
             found.add(int(match.group(1)))
         return [Citation(index=idx) for idx in sorted(found)]
+
+
+_GENERATE_CASE_KEYWORDS = ("生成", "设计", "产出")
+_EXECUTE_CASE_KEYWORDS = ("执行", "运行", "回放", "跑")
+_AUTOMATION_CASE_KEYWORDS = ("自动化", "automation", "case")
+
+
+def _detect_json_route(text: str) -> str | None:
+    """根据用户意图和 JSON 文件类型判断应直达哪个工具。"""
+    query = (text or "").strip()
+    if not query:
+        return None
+
+    path_match = re.search(r"(?:/|\./|\.\./)[^\s]+\.json", query)
+    if path_match is None:
+        return None
+
+    path = Path(path_match.group(0))
+    filename = path.name.lower()
+    has_generate_intent = any(keyword in query for keyword in _GENERATE_CASE_KEYWORDS)
+    has_execute_intent = any(keyword in query for keyword in _EXECUTE_CASE_KEYWORDS)
+
+    if _looks_like_automation_json(filename) and has_execute_intent:
+        return "execute_scenario"
+    if _looks_like_analysis_json(filename) and has_generate_intent:
+        return "design_test_cases"
+    return None
+
+
+def _looks_like_analysis_json(filename: str) -> bool:
+    """req_graph/需求分析 JSON 用于 design_test_cases。"""
+    return filename.endswith("_req_graph.json") or "需求分析" in filename
+
+
+def _looks_like_automation_json(filename: str) -> bool:
+    """automation JSON 用于 execute_scenario。"""
+    return "automation" in filename or filename.endswith("_scenario.json")
+
+
+def _is_automation_case_request(text: str) -> bool:
+    """判断当前请求是否明确指向自动化用例。"""
+    lowered = text.lower()
+    return any(keyword in text or keyword in lowered for keyword in _AUTOMATION_CASE_KEYWORDS)

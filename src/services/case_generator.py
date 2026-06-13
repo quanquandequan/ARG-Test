@@ -5,10 +5,11 @@ from __future__ import annotations
 import ast
 import json
 import re
+from collections.abc import Iterable
 
 from src.core.logging import get_logger
 from src.core.prompt_loader import require_prompt_fields
-from src.domain.requirements import GeneratedTestCase
+from src.domain.test_design.generated_test_case import GeneratedTestCase
 from src.llm.base import BaseLLM
 from src.llm.types import Message
 from src.services.exporters.common import (
@@ -253,10 +254,16 @@ def _normalise(raw: dict, default_module: str) -> dict:
         "expected_visibility": normalise_expected_visibility(
             raw.get("expected_visibility", "")
         ),
-        "forbidden_locators": stringify_extra(raw.get("forbidden_locators", "")),
-        "selectors": stringify_extra(raw.get("selectors", "")),
-        "automation_steps": _format_jsonish_text(raw.get("automation_steps", "")),
-        "assertions": _format_jsonish_text(raw.get("assertions", "")),
+        # automation 相关字段保持结构化，供 execute_scenario 直接消费；
+        # Excel/文本展示时再由 exporter 层格式化为可读字符串。
+        "forbidden_locators": _ensure_string_list(raw.get("forbidden_locators", [])),
+        "selectors": _ensure_string_list(raw.get("selectors", [])),
+        "automation_steps": _ensure_step_list(
+            raw.get("automation_steps", []),
+            search_strategy=raw.get("search_strategy", ""),
+            anchor_text=raw.get("anchor_text", ""),
+        ),
+        "assertions": _ensure_assertion_list(raw.get("assertions", [])),
     }
 
 
@@ -303,6 +310,195 @@ def _format_jsonish_text(value) -> str:
     return _stringify_plain(parsed)
 
 
+def _ensure_string_list(value) -> list[str]:
+    parsed = _coerce_sequence(value)
+    if isinstance(parsed, list):
+        return [_stringify_plain(item) for item in parsed if _stringify_plain(item)]
+    if isinstance(parsed, str) and parsed:
+        return [parsed]
+    return []
+
+
+def _ensure_step_list(
+    value,
+    *,
+    search_strategy="",
+    anchor_text="",
+) -> list[dict]:
+    parsed = _coerce_sequence(value)
+    if isinstance(parsed, list) and all(isinstance(item, dict) for item in parsed):
+        steps = [_normalise_automation_step(item) for item in parsed]
+        return _apply_search_strategy_to_steps(
+            steps,
+            search_strategy=search_strategy,
+            anchor_text=anchor_text,
+        )
+    # 兼容旧字符串步骤：只做保底包装，避免执行器崩溃；真正的目标是 prompt 直接输出对象数组。
+    if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+        return [{"tool": "screen_tool", "action": "get_current_screen", "legacy_note": item} for item in parsed]
+    if isinstance(parsed, str) and parsed:
+        return [{"tool": "screen_tool", "action": "get_current_screen", "legacy_note": parsed}]
+    return []
+
+
+def _ensure_assertion_list(value) -> list[dict]:
+    parsed = _coerce_sequence(value)
+    if isinstance(parsed, list) and all(isinstance(item, dict) for item in parsed):
+        return [_normalise_assertion(item) for item in parsed]
+    # 兼容旧字符串断言：转成最保守的 assert_text
+    if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+        return [{"action": "assert_text", "text": item} for item in parsed]
+    if isinstance(parsed, str) and parsed:
+        return [{"action": "assert_text", "text": parsed}]
+    return []
+
+
+def _normalise_automation_step(step: dict) -> dict:
+    """将生成器历史别名修正为当前执行器支持的动作与参数。"""
+    normalized = {
+        key: _coerce_scalar(value)
+        for key, value in step.items()
+        if _coerce_scalar(value) not in (None, "")
+    }
+    tool = str(normalized.get("tool", "")).strip()
+    action = str(normalized.get("action", "")).strip()
+
+    if tool == "screen_tool" and action == "capture_screenshot":
+        normalized["action"] = "get_screenshot"
+
+    if tool == "action_tool":
+        if "max_scrolls" in normalized and "max_swipes" not in normalized:
+            normalized["max_swipes"] = normalized.pop("max_scrolls")
+        target_type = str(normalized.get("target_type", "")).strip().lower()
+        alias_map = {
+            "locator": "class",
+            "class_name": "class",
+            "classname": "class",
+        }
+        if target_type in alias_map:
+            normalized["target_type"] = alias_map[target_type]
+        if "index" in normalized:
+            try:
+                normalized["index"] = int(normalized["index"])
+            except (TypeError, ValueError):
+                normalized.pop("index", None)
+
+    return normalized
+
+
+def _apply_search_strategy_to_steps(
+    steps: list[dict],
+    *,
+    search_strategy,
+    anchor_text,
+) -> list[dict]:
+    """把 search_strategy 真正落到 scroll automation step 上。"""
+    strategy = _parse_search_strategy(search_strategy)
+    if not strategy:
+        return steps
+
+    for step in steps:
+        if str(step.get("tool", "")).strip() != "action_tool":
+            continue
+        if str(step.get("action", "")).strip() != "scroll":
+            continue
+
+        if "direction" not in step and strategy.get("direction"):
+            step["direction"] = strategy["direction"]
+        if "max_swipes" not in step and strategy.get("max_swipes") is not None:
+            step["max_swipes"] = strategy["max_swipes"]
+        if "stop_condition" not in step:
+            stop_condition = strategy.get("stop_condition")
+            if not stop_condition and str(anchor_text).strip():
+                stop_condition = f"text={str(anchor_text).strip()}"
+            if stop_condition:
+                step["stop_condition"] = stop_condition
+        break
+
+    return steps
+
+
+def _parse_search_strategy(value) -> dict:
+    """解析字符串或字典形式的 search_strategy。"""
+    parsed = _coerce_sequence(value)
+    if isinstance(parsed, dict):
+        direction = str(parsed.get("direction", "")).strip().lower()
+        max_swipes = parsed.get("max_swipes", parsed.get("max_scrolls"))
+        stop_condition = str(parsed.get("stop_condition", "")).strip()
+        result = {}
+        if direction:
+            result["direction"] = direction
+        if max_swipes not in (None, ""):
+            result["max_swipes"] = int(max_swipes)
+        if stop_condition:
+            result["stop_condition"] = _normalize_stop_condition(stop_condition)
+        return result
+
+    text = str(parsed or "").strip()
+    if not text:
+        return {}
+
+    result: dict[str, str | int] = {}
+    direction_match = re.search(r"direction\s*[:=]\s*(up|down|left|right)", text, re.IGNORECASE)
+    if direction_match:
+        result["direction"] = direction_match.group(1).lower()
+
+    max_match = re.search(r"max_(?:scrolls|swipes)\s*[:=]\s*(\d+)", text, re.IGNORECASE)
+    if max_match:
+        result["max_swipes"] = int(max_match.group(1))
+
+    stop_match = re.search(r"stop_condition\s*[:=]\s*['\"]?([^'\"]+)['\"]?", text, re.IGNORECASE)
+    if stop_match:
+        result["stop_condition"] = _normalize_stop_condition(stop_match.group(1).strip())
+
+    return result
+
+
+def _normalize_stop_condition(value: str) -> str:
+    """把停止条件统一成执行器可消费的 text=... 形式。"""
+    condition = value.strip()
+    if not condition:
+        return ""
+    lowered = condition.lower()
+    if lowered.startswith("text="):
+        return condition
+    if "每日更新" in condition:
+        return "text=每日更新"
+    return condition
+
+
+def _normalise_assertion(assertion: dict) -> dict:
+    """兼容历史断言动作，尽量映射到现有 assertion_tool 能力。"""
+    normalized = {
+        key: _coerce_scalar(value)
+        for key, value in assertion.items()
+        if _coerce_scalar(value) not in (None, "")
+    }
+    action = str(normalized.get("action", "")).strip()
+
+    action_aliases = {
+        "assert_page_contains": "assert_text",
+        "assert_not_element": "assert_not_text",
+        "assert_element_not_exist": "assert_not_text",
+        "assert_page_title": "assert_page",
+    }
+    if action in action_aliases:
+        normalized["action"] = action_aliases[action]
+
+    if normalized.get("action") == "assert_text" and "text" not in normalized:
+        if "element_text" in normalized:
+            normalized["text"] = normalized.pop("element_text")
+    if normalized.get("action") == "assert_not_text" and "text" not in normalized:
+        if "element_text" in normalized:
+            normalized["text"] = normalized.pop("element_text")
+    if normalized.get("action") == "assert_page" and "page" not in normalized:
+        if "page_title" in normalized:
+            normalized["page"] = normalized.pop("page_title")
+
+    normalized.pop("is_selected", None)
+    return normalized
+
+
 def _coerce_sequence(value):
     if isinstance(value, (list, dict)):
         return value
@@ -320,6 +516,26 @@ def _coerce_sequence(value):
             return ast.literal_eval(text)
         except (ValueError, SyntaxError):
             return text
+
+
+def _coerce_scalar(value):
+    """将字符串数字/布尔值转为更稳定的结构化类型。"""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        lower_text = text.lower()
+        if lower_text in {"true", "false"}:
+            return lower_text == "true"
+        if re.fullmatch(r"-?\d+", text):
+            try:
+                return int(text)
+            except ValueError:
+                return text
+        return text
+    if isinstance(value, Iterable) and not isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
+        return str(value)
+    return value
 
 
 def _stringify_plain(value) -> str:

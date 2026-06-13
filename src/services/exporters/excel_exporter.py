@@ -95,6 +95,14 @@ def _manual_row(case_id: str, row_case: dict) -> list[str]:
 
 
 def _automation_row(case_id: str, row_case: dict) -> list[str]:
+    # Excel 仍面向人工阅读，因此把结构化字段渲染成 JSON 字符串展示；
+    # JSON 导出器则保留原始 list/dict 结构供 execute_scenario 执行。
+    def _pretty(value):
+        import json
+        if isinstance(value, (list, dict)):
+            return json.dumps(value, ensure_ascii=False, indent=2)
+        return value or ""
+
     return [
         case_id,
         row_case["module"],
@@ -108,13 +116,13 @@ def _automation_row(case_id: str, row_case: dict) -> list[str]:
         row_case.get("locator_chain", ""),
         row_case.get("anchor_text", ""),
         row_case.get("search_strategy", ""),
-        row_case.get("forbidden_locators", ""),
+        _pretty(row_case.get("forbidden_locators", [])),
         row_case["steps"],
         row_case["expected"],
         row_case["priority"],
         row_case["type"],
-        row_case.get("selectors", ""),
-        row_case.get("automation_steps", ""),
-        row_case.get("assertions", ""),
+        _pretty(row_case.get("selectors", [])),
+        _pretty(row_case.get("automation_steps", [])),
+        _pretty(row_case.get("assertions", [])),
         row_case["notes"],
     ]

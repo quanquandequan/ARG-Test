@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 
 from src.domain.artifacts.test_design_artifact import TestDesignArtifact
 from src.domain.requirement import RequirementIR
-from src.domain.requirements import GeneratedTestCase, TestCaseGenerationRequest
+from src.domain.test_design.generated_test_case import GeneratedTestCase
+from src.domain.test_design.generation import TestCaseGenerationRequest
 from src.domain.test_design import TestPoint, TestScenario
 
 

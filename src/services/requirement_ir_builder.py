@@ -7,7 +7,7 @@ from datetime import datetime
 from src.core.prompt_loader import require_prompt_fields
 from src.llm.base import BaseLLM
 from src.llm.types import Message
-from src.services.requirement_ir import RequirementIR
+from src.domain.requirement.requirement_ir import RequirementIR
 
 
 class RequirementIRBuilder:
@@ -67,12 +67,17 @@ class RequirementIRBuilder:
             ),
         ]
 
-        response = await self._llm.generate_chat(
-            messages=messages,
-            temperature=self._temperature,
-            max_tokens=self._max_tokens,
-        )
-        ir = RequirementIR.from_llm_json(response.content)
+        # DeepSeek 偶发输出格式错误，最多重试 2 次
+        ir = None
+        for attempt in range(3):
+            response = await self._llm.generate_chat(
+                messages=messages,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+            )
+            ir = RequirementIR.from_llm_json(response.content)
+            if ir is not None:
+                break
         if ir is None:
             return None
 

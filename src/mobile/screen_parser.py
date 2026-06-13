@@ -76,6 +76,21 @@ class ParsedScreen:
     def clickable_elements(self) -> list[UIElement]:
         return [e for e in self.elements if e.clickable and e.is_visible]
 
+    def visible_elements(self) -> list[UIElement]:
+        """返回当前页面上可见的元素列表。"""
+        return [e for e in self.elements if e.is_visible]
+
+    def visible_labels(self, limit: int = 8) -> list[str]:
+        """提取前若干个可见标签，便于错误诊断。"""
+        labels: list[str] = []
+        for el in self.visible_elements():
+            label = el.label.strip()
+            if label and label not in labels:
+                labels.append(label)
+            if len(labels) >= limit:
+                break
+        return labels
+
     def find_by_text(self, text: str, exact: bool = False) -> UIElement | None:
         for el in self.elements:
             if exact:
@@ -92,9 +107,25 @@ class ParsedScreen:
                 return el
         return None
 
+    def find_by_class_name(
+        self,
+        class_name: str,
+        index: int = 0,
+        clickable_only: bool = False,
+    ) -> UIElement | None:
+        """按 class name 查找第 N 个可见元素。"""
+        candidates = [
+            el
+            for el in self.visible_elements()
+            if el.class_name == class_name and (not clickable_only or el.clickable)
+        ]
+        if 0 <= index < len(candidates):
+            return candidates[index]
+        return None
+
     def to_agent_summary(self) -> dict:
         """供 Agent 消费的紧凑表示。"""
-        visible = [e for e in self.elements if e.is_visible]
+        visible = self.visible_elements()
         return {
             "element_count": len(visible),
             "clickable_count": len(self.clickable_elements()),
@@ -112,7 +143,7 @@ class ParsedScreen:
 
         设置 ``min_text_elements=0`` 表示始终信任 XML（不自动触发 VLM）。
         """
-        visible = [e for e in self.elements if e.is_visible]
+        visible = self.visible_elements()
         has_clickable = any(e.clickable for e in visible)
         if has_clickable:
             return True

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import field_validator, model_validator
 
@@ -111,8 +111,8 @@ class RequirementIR(BaseModel):
         import json
         import re
 
-        text = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
-        text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE).strip()
+        text = re.sub(r"```(?:json)?\s*", "", raw, count=1, flags=re.MULTILINE)
+        text = re.sub(r"\s*```\s*$", "", text, count=1, flags=re.MULTILINE).strip()
 
         candidates = [text]
         extracted = _find_first_json_object(text)
@@ -129,15 +129,6 @@ class RequirementIR(BaseModel):
                     return cls.model_validate(data)
             except Exception:
                 pass
-            # Try repaired version
-            repaired = _repair_llm_json(candidate)
-            if repaired:
-                try:
-                    data = json.loads(repaired)
-                    if isinstance(data, dict):
-                        return cls.model_validate(data)
-                except Exception:
-                    pass
         return None
 
 
@@ -200,8 +191,8 @@ class ReviewResult(BaseModel):
         import json
         import re
 
-        text = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
-        text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE).strip()
+        text = re.sub(r"```(?:json)?\s*", "", raw, count=1, flags=re.MULTILINE)
+        text = re.sub(r"\s*```\s*$", "", text, count=1, flags=re.MULTILINE).strip()
 
         # Try to find a valid JSON object
         # _find_first_json_object goes first (handles ```json fences better)
@@ -246,3 +237,163 @@ class ReviewResult(BaseModel):
             f"｜缺口 {len(self.gaps)} 条"
             f"｜风险 {len(self.risks)} 项"
         )
+
+
+class EnrichedRequirementIR(BaseModel):
+    """RequirementIR 与 ReviewResult 的合并体，供 graph_analyzer 消费。"""
+
+    ir: RequirementIR
+    review: ReviewResult
+
+    def to_graph_analyzer_json(self) -> str:
+        """序列化为传给 graph_analyzer 的 JSON 字符串。"""
+        return self.model_dump_json(indent=2)
+
+    def high_priority_gaps(self) -> list[Gap]:
+        """返回影响说明非空的缺口，便于分析器优先排序。"""
+        return [gap for gap in self.review.gaps if gap.impact.strip()]
+
+    def high_risks(self) -> list[ReviewRisk]:
+        """返回 reviewer 标注的高风险项。"""
+        return [risk for risk in self.review.risks if risk.level == "high"]
+
+
+class RiskEdge(BaseModel):
+    """功能间的风险传导关系，只描述关系，不重复列举风险事实。"""
+
+    from_feature_id: str
+    to_feature_id: str
+    risk_type: str = "other"
+    description: str
+
+
+class RiskGraph(BaseModel):
+    """功能间风险传导图。"""
+
+    nodes: list[str] = Field(default_factory=list)
+    edges: list[RiskEdge] = Field(default_factory=list)
+
+
+class TestScenario(BaseModel):
+    """graph_analyzer 推导的测试场景，必须引用 IR 中已有 feature。"""
+
+    feature_id: str = ""
+    scenario: str = ""
+    priority: Literal["P0", "P1", "P2"] = "P1"
+    test_type: str = ""
+    focus: list[str] = Field(default_factory=list)
+
+
+class AnalysisClarification(BaseModel):
+    """基于 reviewer 缺口和风险关系排序后的澄清项。"""
+
+    priority_rank: int = 1
+    related_id: str = ""
+    question: str = ""
+    impact_if_unresolved: str = ""
+
+
+
+def _coerce_string_lists(data: dict, *field_names: str) -> dict:
+    """将 LLM 可能输出为 list[dict] 的字段强制转为 list[str]。
+    对每个 dict 元素拼接为 "{key1}: {value1} - {key2}: {value2}" 格式。
+    已是字符串的元素保持不变。
+    """
+    import json as _json
+    for name in field_names:
+        values = data.get(name)
+        if not isinstance(values, list):
+            continue
+        coerced: list[str] = []
+        for item in values:
+            if isinstance(item, str):
+                coerced.append(item)
+            elif isinstance(item, dict):
+                parts = [
+                    f"{k}: {v}" for k, v in item.items()
+                    if v and k not in ("_", "")
+                ]
+                coerced.append(" - ".join(parts) if parts else _json.dumps(item, ensure_ascii=False))
+            else:
+                coerced.append(str(item))
+        data[name] = coerced
+    return data
+
+
+class AnalysisReport(BaseModel):
+    """graph_analyzer 的增量分析结果。"""
+
+    risk_graph: RiskGraph = Field(default_factory=RiskGraph)
+    test_strategy: list[TestScenario] = Field(default_factory=list)
+    clarifications: list[AnalysisClarification] = Field(default_factory=list)
+    kb_references: list[Any] = Field(default_factory=list)
+    regression_scope: list[Any] = Field(default_factory=list)
+    graph: dict[str, Any] = Field(default_factory=dict, exclude=True)
+
+    @classmethod
+    def from_llm_json(cls, raw: str) -> "AnalysisReport | None":
+        """解析 LLM 输出的 AnalysisReport JSON；失败时返回 None。"""
+        import json
+        import re
+
+        text = re.sub(r"```(?:json)?\s*", "", raw, count=1, flags=re.MULTILINE)
+        text = re.sub(r"\s*```\s*$", "", text, count=1, flags=re.MULTILINE).strip()
+
+        # 多策略提取 JSON
+        candidates = []
+        # 策略1: 从 markdown fence 中提取
+        extracted = _find_first_json_object(text)
+        if extracted:
+            candidates.append(extracted)
+        # 策略2: 直接解析（fence 被正则剥离后的纯 JSON）
+        candidates.append(text)
+        # 策略3: 从原始输入中提取（跳过 fence 剥离，直接从 raw 找）
+        raw_extracted = _find_first_json_object(raw)
+        if raw_extracted and raw_extracted not in candidates:
+            candidates.append(raw_extracted)
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+            # 直接解析
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    data = _coerce_string_lists(data, "kb_references", "regression_scope")
+                    report = cls.model_validate(data)
+                    report.graph = data
+                    return report
+            except Exception:
+                pass
+            # 修复常见 LLM JSON 错误后重试
+            repaired = candidate.replace("\\'", "'")
+            repaired = re.sub(
+                r'([一-鿿])"([^"]{1,50})"([一-鿿，。；．])',
+                r'\1「\2」\3',
+                repaired,
+            )
+            if repaired != candidate:
+                try:
+                    data = json.loads(repaired)
+                    if isinstance(data, dict):
+                        report = cls.model_validate(data)
+                        report.graph = data
+                        return report
+                except Exception:
+                    pass
+        return None
+
+    @property
+    def feature_count(self) -> int:
+        """返回风险图中涉及的功能节点数。"""
+        return len(self.risk_graph.nodes)
+
+    @property
+    def risk_count(self) -> int:
+        """返回风险传导边数量。"""
+        return len(self.risk_graph.edges)
+
+    @property
+    def clarification_count(self) -> int:
+        """返回分析器排序后的澄清项数量。"""
+        return len(self.clarifications)

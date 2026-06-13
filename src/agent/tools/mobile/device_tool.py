@@ -173,6 +173,15 @@ class DeviceTool(BaseTool):
             app_package = cfg_mobile.get("app_package", "")
         if not app_package:
             return "错误：必须提供 app_package 参数（或在 mobile.app_package 配置中设置）。"
+
+        # 如果 app 已在前台运行，跳过 activate_app。
+        # activate_app 在 app 已处于前台时会触发其启动流程（splash → 导航），
+        # 可能导致 app 退到后台或进入错误页面。
+        current_pkg = await self._mgr.get_current_package()
+        if current_pkg == app_package:
+            activity = await self._mgr.get_current_activity()
+            return f"应用 {app_package} 已在前台，无需重新启动。当前 Activity：{activity or '未知'}"
+
         try:
             # launch_app 内部使用 activate_app，不存在 SecurityException 风险
             await self._mgr.launch_app(app_package)

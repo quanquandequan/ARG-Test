@@ -68,35 +68,16 @@ agent:
   max_iterations: 10
   max_history_tokens: 4000   # 对话历史滑动窗口 token 预算
 
-  # Agent 总系统 Prompt 文本集中在 prompts/agent_default.yaml。
-  system_prompt_id: agent_default
-
-  # 按领域拆分的 Agent Profile。
-  # API /query 默认使用 qa_agent；其他 profile 可供 CLI / 后续接口显式选择。
-  profiles:
-    qa_agent:
-      max_iterations: 10
-      max_history_tokens: 4000
-      system_prompt_id: agent_qa_agent
-      tools:
-        - search_knowledge
-        - analyze_requirement
-        - design_test_cases
-        - execute_scenario
-        - device_tool
-        - screen_tool
-        - action_tool
-        - assertion_tool
-
-    mobile_debug:
-      max_iterations: 10
-      max_history_tokens: 4000
-      system_prompt_id: agent_mobile_debug
-      tools:
-        - device_tool
-        - screen_tool
-        - action_tool
-        - assertion_tool
+  system_prompt_id: agent
+  tools:
+    - search_knowledge
+    - analyze_requirement
+    - design_test_cases
+    - execute_scenario
+    - device_tool
+    - screen_tool
+    - action_tool
+    - assertion_tool
 
 # ── requirement_parser / reviewer 技术参数 ────────────────────────────────────
 req_parser:
@@ -136,7 +117,7 @@ test_generator:
 # 请先安装可选依赖：pip install -e ".[mobile]"
 # 确保 Appium server 已运行：npx appium
 mobile:
-  appium_server_url: "http://localhost:4723"
+  appium_server_url: "http://127.0.0.1:4723"
   device_name: "NXTDU16B05013894"              # 例如 "emulator-5554" 或 "R5CX1234ABCD"
   platform_version: "8.0"         # 例如 "14"
   app_package: "com.iqiyi.acg"              # 例如 "com.example.app"

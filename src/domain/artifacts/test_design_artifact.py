@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from src.domain.requirement import RequirementIR
-from src.domain.requirements import GeneratedTestCase
+from src.domain.test_design.generated_test_case import GeneratedTestCase
 from src.domain.test_design.test_point import TestPoint
 from src.domain.test_design.test_scenario import TestScenario
 

@@ -46,21 +46,6 @@ _DEFAULT_TOOLS = (
     "execute_scenario",
 )
 
-# 共享移动端单例：首次构建移动端工具时延迟创建。
-# 四个移动端工具引用同一个 driver manager 和 page cache，
-# 确保 DeviceTool.connect() 对 ScreenTool / ActionTool / AssertionTool 可见。
-_shared_driver_manager: AppiumDriverManager | None = None
-_shared_page_cache: PageCache | None = None
-
-
-def _get_mobile_singletons() -> tuple[AppiumDriverManager, PageCache]:
-    global _shared_driver_manager, _shared_page_cache
-    if _shared_driver_manager is None:
-        _shared_driver_manager = AppiumDriverManager()
-    if _shared_page_cache is None:
-        _shared_page_cache = PageCache()
-    return _shared_driver_manager, _shared_page_cache
-
 
 def _parse_tool_config(entry: Any) -> tuple[str, str | None, str | None]:
     """从配置条目返回 ``(name, description_override, system_prompt)``。

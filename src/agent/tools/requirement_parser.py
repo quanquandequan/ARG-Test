@@ -10,7 +10,7 @@ from src.core.logging import get_logger
 from src.domain.artifacts import ArtifactKind
 from src.llm.base import BaseLLM
 from src.services.artifact_repository import LocalArtifactRepository
-from src.services.requirement_ir import RequirementIR
+from src.domain.requirement.requirement_ir import RequirementIR
 from src.services.requirement_ir_builder import (
     RequirementIRBuilder,
     render_requirement_ir_markdown,

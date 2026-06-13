@@ -20,7 +20,6 @@ from src.retriever.retrieval_engine import RetrievalEngine
 from src.services.artifact_repository import LocalArtifactRepository
 from src.services.ingestion_service import DocumentIngestionService
 from src.services.page_cache import PageCache
-from src.services.requirement_analysis import RequirementAnalysisService
 from src.vectordb.factory import get_vectordb
 from src.workflows.execution import ExecutionWorkflow
 from src.workflows.testcase_design import TestCaseGenerationWorkflow
@@ -63,11 +62,6 @@ def get_ingestion_service():
     return DocumentIngestionService(IngestionPipeline(_loader(), _cleaner(), ChineseChunker()), _vectordb(), _embedder())
 
 @lru_cache(maxsize=1)
-def get_requirement_analysis_service():
-    from src.agent.tools.requirement_graph_analyzer import RequirementGraphAnalyzerTool
-    return RequirementAnalysisService(_loader(), _cleaner(), _retrieval_engine(), RequirementGraphAnalyzerTool(llm=_llm()), _artifacts())
-
-@lru_cache(maxsize=1)
 def get_test_case_generation_service():
     wf = TestCaseGenerationWorkflow.create_default(_loader(), _cleaner(), _retrieval_engine(), _artifacts(), _llm())
     return wf
@@ -79,21 +73,7 @@ def get_mobile_workflow():
 @lru_cache(maxsize=2)
 def get_agent(profile_name=None):
     from omegaconf import OmegaConf
-    cfg = get_config().get("agent", {})
-    profiles = cfg.get("profiles", {})
-
-    if not profile_name and "qa_agent" in profiles:
-        cfg_agent = profiles["qa_agent"]
-        if OmegaConf.is_config(cfg_agent):
-            cfg_agent = OmegaConf.to_container(cfg_agent, resolve=True)
-    elif profile_name and profile_name in profiles:
-        cfg_agent = profiles[profile_name]
-        if OmegaConf.is_config(cfg_agent):
-            cfg_agent = OmegaConf.to_container(cfg_agent, resolve=True)
-    elif profile_name:
-        raise ValueError(f"Unknown agent profile: {profile_name}")
-    else:
-        cfg_agent = cfg
+    cfg_agent = get_config().get("agent", {})
 
     raw_tools = cfg_agent.get("tools", [])
     if OmegaConf.is_config(raw_tools):
@@ -121,7 +101,7 @@ def clear_all_caches():
     _this = sys.modules[__name__]
     for name in ("_llm", "_embedder", "_vectordb", "_reranker", "_retrieval_engine",
                  "_artifacts", "_loader", "_cleaner", "_driver_manager", "_page_cache",
-                 "get_ingestion_service", "get_requirement_analysis_service",
+                 "get_ingestion_service",
                  "get_test_case_generation_service", "get_mobile_workflow", "get_agent"):
         fn = getattr(_this, name, None)
         if fn and hasattr(fn, "cache_clear"):

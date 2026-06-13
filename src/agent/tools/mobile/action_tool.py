@@ -3,8 +3,8 @@
 每次操作成功后都会使 PageCache 失效，确保下一次屏幕读取反映最新状态。
 
 支持的操作：
-  tap           按文本、resource-id 或坐标点击元素
-  long_press    按文本、id 或坐标长按元素
+  tap           按文本、resource-id、class name 或坐标点击元素
+  long_press    按文本、id、class name 或坐标长按元素
   input_text    向当前聚焦字段输入文本
   clear_text    清空当前聚焦文本框
   swipe         按方向滑动（上/下/左/右）或自定义坐标
@@ -15,9 +15,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
+
 from src.agent.base_tool import BaseTool
 from src.core.logging import get_logger
 from src.mobile.driver import AppiumDriverManager
+from src.mobile.screen_parser import ParsedScreen, UIElement
 from src.services.page_cache import PageCache
 
 logger = get_logger(__name__)
@@ -53,8 +57,12 @@ class ActionTool(BaseTool):
             },
             "target_type": {
                 "type": "string",
-                "enum": ["text", "id", "desc"],
+                "enum": ["text", "id", "desc", "class"],
                 "description": "target 的匹配方式（默认 text）",
+            },
+            "index": {
+                "type": "integer",
+                "description": "按 class 匹配时要选择的第几个可见元素（默认 0）",
             },
             "x": {"type": "number", "description": "横坐标（像素，优先级低于 target）"},
             "y": {"type": "number", "description": "纵坐标（像素，优先级低于 target）"},
@@ -67,6 +75,14 @@ class ActionTool(BaseTool):
             "distance": {
                 "type": "integer",
                 "description": "自定义滑动距离（像素），不填则使用默认值",
+            },
+            "max_swipes": {
+                "type": "integer",
+                "description": "滚动查找时的最大滑动次数，上限固定为 10",
+            },
+            "stop_condition": {
+                "type": "string",
+                "description": "滚动停止条件，例如 text=每日更新",
             },
             "duration_ms": {
                 "type": "integer",
@@ -124,29 +140,97 @@ class ActionTool(BaseTool):
         target_type: str = "text",
         x: float | None = None,
         y: float | None = None,
+        index: int = 0,
     ) -> tuple[int, int] | None:
         """解析元素坐标；未找到时返回 None。"""
         if target:
             parsed = await self._mgr.get_parsed_screen()
-
-            if target_type == "id":
-                el = parsed.find_by_resource_id(target)
-            elif target_type == "desc":
-                # 匹配 content_desc 字段
-                el = next(
-                    (e for e in parsed.elements if target in e.content_desc),
-                    None,
-                )
-            else:
-                el = parsed.find_by_text(target)
-
-            if el and el.is_visible:
-                return el.center
+            element = self._find_target_element(
+                parsed,
+                target=target,
+                target_type=target_type,
+                index=index,
+            )
+            if element is not None:
+                return element.center
 
         if x is not None and y is not None:
             return int(x), int(y)
 
         return None
+
+    def _find_target_element(
+        self,
+        parsed: ParsedScreen,
+        target: str,
+        target_type: str,
+        index: int = 0,
+    ) -> UIElement | None:
+        """按 target_type 在当前页面中解析目标元素。"""
+        normalized_type = self._normalize_target_type(target_type)
+        normalized_target = target.strip()
+
+        if normalized_type == "id":
+            element = parsed.find_by_resource_id(normalized_target)
+            return element if element and element.is_visible else None
+
+        if normalized_type == "desc":
+            element = next(
+                (
+                    e
+                    for e in parsed.visible_elements()
+                    if normalized_target in e.content_desc
+                ),
+                None,
+            )
+            return element if element and element.is_visible else None
+
+        if normalized_type == "class":
+            class_name = self._extract_class_name(normalized_target)
+            clickable_element = parsed.find_by_class_name(
+                class_name,
+                index=index,
+                clickable_only=True,
+            )
+            if clickable_element is not None:
+                return clickable_element
+            return parsed.find_by_class_name(class_name, index=index, clickable_only=False)
+
+        element = parsed.find_by_text(normalized_target)
+        return element if element and element.is_visible else None
+
+    def _normalize_target_type(self, target_type: str) -> str:
+        """兼容生成器历史输出的 target_type 别名。"""
+        normalized = (target_type or "text").strip().lower()
+        alias_map = {
+            "class_name": "class",
+            "classname": "class",
+            "locator": "class",
+        }
+        return alias_map.get(normalized, normalized)
+
+    def _extract_class_name(self, target: str) -> str:
+        """兼容 className=android.widget.ImageView 这类旧格式。"""
+        match = re.match(r"^[A-Za-z_]+=(.+)$", target)
+        if match:
+            return match.group(1).strip()
+        return target
+
+    def _describe_lookup_failure(
+        self,
+        parsed: ParsedScreen,
+        target: str,
+        target_type: str,
+    ) -> str:
+        """生成失败时的补充诊断信息，便于定位页面状态。"""
+        visible_labels = parsed.visible_labels(limit=6)
+        labels_preview = "、".join(visible_labels) if visible_labels else "无明显文案"
+        return (
+            f'未找到 target="{target}"（target_type={target_type}）。'
+            f"当前可见元素 {len(parsed.visible_elements())} 个，"
+            f"可点击元素 {len(parsed.clickable_elements())} 个，"
+            f"前几个可见文案：{labels_preview}。"
+        )
 
     async def _tap(
         self,
@@ -154,12 +238,16 @@ class ActionTool(BaseTool):
         target_type: str = "text",
         x: float | None = None,
         y: float | None = None,
+        index: int = 0,
         **_,
     ) -> str:
-        coords = await self._resolve_coords(target, target_type, x, y)
+        coords = await self._resolve_coords(target, target_type, x, y, index=index)
         if coords is None:
-            hint = f'文字"{target}"' if target else f"坐标 ({x}, {y})"
-            return f"未找到目标 {hint}，tap 操作未执行。"
+            if target:
+                parsed = await self._mgr.get_parsed_screen()
+                failure_detail = self._describe_lookup_failure(parsed, target, target_type)
+                return f"未找到目标 文字\"{target}\"，tap 操作未执行。{failure_detail}"
+            return f"未找到目标 坐标 ({x}, {y})，tap 操作未执行。"
         cx, cy = coords
         try:
             await self._mgr.tap(cx, cy)
@@ -174,9 +262,10 @@ class ActionTool(BaseTool):
         x: float | None = None,
         y: float | None = None,
         duration_ms: int = 1000,
+        index: int = 0,
         **_,
     ) -> str:
-        coords = await self._resolve_coords(target, target_type, x, y)
+        coords = await self._resolve_coords(target, target_type, x, y, index=index)
         if coords is None:
             return f"未找到目标 {target or f'({x},{y})'}，long_press 未执行。"
         cx, cy = coords
@@ -209,37 +298,115 @@ class ActionTool(BaseTool):
         x: float | None = None,
         y: float | None = None,
         duration_ms: int = 800,
+        max_swipes: int | None = None,
+        stop_condition: str = "",
         **_,
     ) -> str:
-        w, h = _DEFAULT_WIDTH, _DEFAULT_HEIGHT
+        if stop_condition.strip():
+            return await self._scroll_until_condition(
+                direction=direction,
+                distance=distance,
+                duration_ms=duration_ms,
+                max_swipes=max_swipes,
+                stop_condition=stop_condition,
+            )
+
+        return await self._perform_single_swipe(
+            direction=direction,
+            distance=distance,
+            duration_ms=duration_ms,
+        )
+
+    async def _get_screen_size(self) -> tuple[int, int]:
+        """从设备获取真实屏幕尺寸，回退到默认值。"""
+        try:
+            drv = self._mgr._driver
+            if drv is not None:
+                size = await asyncio.to_thread(lambda: drv.get_window_size())
+                return int(size["width"]), int(size["height"])
+        except Exception:
+            pass
+        return _DEFAULT_WIDTH, _DEFAULT_HEIGHT
+
+    async def _perform_single_swipe(
+        self,
+        direction: str,
+        distance: int | None,
+        duration_ms: int,
+    ) -> str:
+        """执行一次滑动，direction 语义表示页面浏览方向。
+
+        使用屏幕比例坐标（3/4 → 1/4）而非固定像素，
+        兼容不同分辨率设备并避免被顶部 banner 拦截触摸事件。
+        """
+        w, h = await self._get_screen_size()
         margin_x = int(w * _SWIPE_MARGIN)
         mid_x = w // 2
-        mid_y = h // 2
 
         direction = direction.lower()
-        default_dist = int(h * _SCROLL_DISTANCE)
-        dist = distance if distance else default_dist
 
-        if direction == "up":
-            sx, sy = mid_x, mid_y + dist // 2
-            ex, ey = mid_x, mid_y - dist // 2
-        elif direction == "down":
-            sx, sy = mid_x, mid_y - dist // 2
-            ex, ey = mid_x, mid_y + dist // 2
+        # direction 表示页面浏览方向，不是手指移动方向。
+        # down = 向下浏览（手指上滑）：从 3/4 处滑到 1/4 处
+        # up   = 向上浏览（手指下滑）：从 1/4 处滑到 3/4 处
+        if direction == "down":
+            sx, sy = mid_x, int(h * 0.75)
+            ex, ey = mid_x, int(h * 0.25)
+        elif direction == "up":
+            sx, sy = mid_x, int(h * 0.25)
+            ex, ey = mid_x, int(h * 0.75)
         elif direction == "left":
-            sx, sy = w - margin_x, mid_y
-            ex, ey = margin_x, mid_y
+            sx, sy = margin_x, h // 2
+            ex, ey = w - margin_x, h // 2
         elif direction == "right":
-            sx, sy = margin_x, mid_y
-            ex, ey = w - margin_x, mid_y
+            sx, sy = w - margin_x, h // 2
+            ex, ey = margin_x, h // 2
         else:
             return f"未知滑动方向：{direction}。支持：up / down / left / right"
 
+        dist = abs(ey - sy)
         try:
             await self._mgr.swipe(sx, sy, ex, ey, duration_ms)
             return f"已向 {direction} 滑动 {dist}px。"
         except Exception as e:
             return f"swipe 失败：{e}"
+
+    async def _scroll_until_condition(
+        self,
+        direction: str,
+        distance: int | None,
+        duration_ms: int,
+        max_swipes: int | None,
+        stop_condition: str,
+    ) -> str:
+        """滚动直到满足停止条件；最多滑动 10 次，避免陷入循环。"""
+        swipes = max(1, min(int(max_swipes or 1), 10))
+        for attempt in range(swipes + 1):
+            if await self._matches_stop_condition(stop_condition):
+                return f"已满足停止条件：{stop_condition}。共滑动 {attempt} 次。"
+            if attempt == swipes:
+                break
+            swipe_result = await self._perform_single_swipe(
+                direction=direction,
+                distance=distance,
+                duration_ms=duration_ms,
+            )
+            if swipe_result.startswith("swipe 失败") or swipe_result.startswith("未知滑动方向"):
+                return swipe_result
+
+        return f"滑动 {swipes} 次后仍未满足停止条件：{stop_condition}。"
+
+    async def _matches_stop_condition(self, stop_condition: str) -> bool:
+        """支持 text=... 形式的可见文本停止条件。"""
+        condition = stop_condition.strip()
+        parsed = await self._mgr.get_parsed_screen()
+        if condition.startswith("text="):
+            target = condition.split("=", 1)[1].strip().strip("\"'")
+            element = parsed.find_by_text(target)
+            return element is not None and element.is_visible
+        if condition:
+            element = parsed.find_by_text(condition)
+            return element is not None and element.is_visible
+        return False
 
     async def _back(self) -> str:
         try:
