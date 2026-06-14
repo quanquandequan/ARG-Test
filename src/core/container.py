@@ -1,4 +1,4 @@
-"""FastAPI dependency injection — lru_cache singletons."""
+"""应用级 DI 容器 — lru_cache 单例工厂。"""
 
 import sys
 from functools import lru_cache
@@ -38,7 +38,18 @@ def _vectordb(): return get_vectordb()
 def _reranker(): return get_reranker()
 
 @lru_cache(maxsize=1)
-def _retrieval_engine(): return RetrievalEngine(DenseRetriever(_embedder(), _vectordb()), _reranker())
+def _retrieval_engine():
+    cfg = get_config().get("retrieval", {})
+    top_k = int(cfg.get("top_k", 20))
+    final_k = int(cfg.get("final_k", 5))
+    similarity_threshold = float(cfg.get("similarity_threshold", 0.0))
+    retriever = DenseRetriever(
+        _embedder(),
+        _vectordb(),
+        top_k=top_k,
+        similarity_threshold=similarity_threshold,
+    )
+    return RetrievalEngine(retriever, _reranker(), top_k=top_k, final_k=final_k)
 
 @lru_cache(maxsize=1)
 def _artifacts():

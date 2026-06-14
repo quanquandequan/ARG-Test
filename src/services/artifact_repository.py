@@ -19,8 +19,8 @@ _OUTPUT_DIRS = {
     ArtifactKind.REQUIREMENT_REVIEW_MARKDOWN: "requirement_ir",
     ArtifactKind.TEST_CASES_XLSX: "test_cases",
     ArtifactKind.TEST_CASES_AUTOMATION_JSON: "test_cases",
-    ArtifactKind.EXECUTION_REPORT_JSON: "executions",
-    ArtifactKind.EXECUTION_SCREENSHOT_PNG: "executions",
+    ArtifactKind.EXECUTION_REPORT_JSON: "test_execution",
+    ArtifactKind.EXECUTION_SCREENSHOT_PNG: "test_execution",
 }
 
 

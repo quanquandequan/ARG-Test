@@ -10,12 +10,16 @@ from pathlib import Path
 
 from src.core.logging import get_logger
 from src.domain.artifacts import ArtifactKind, ArtifactRecord
+from src.domain.artifacts.test_design_artifact import TestDesignArtifact
 from src.domain.requirement import Feature, RequirementIR
+from src.domain.test_design.execution_plan import ExecutionAction, ExecutionPlan
 from src.domain.test_design.generation import (
     TestCaseGenerationData,
     TestCaseGenerationRequest,
     TestCaseGenerationResult,
 )
+from src.domain.test_design.test_point import TestPoint
+from src.domain.test_design.test_scenario import TestScenario
 from src.services.case_generator import CaseGeneratorNode
 from src.services.exporters import ExcelExporter, JsonExporter, MarkdownExporter
 from src.services.exporters.common import normalise_generation_mode
@@ -42,6 +46,8 @@ class TestCaseGenerationWorkflow:
         self._json_exporter = json_exporter or JsonExporter()
         self._markdown_exporter = markdown_exporter or MarkdownExporter()
         self._default_output_dir = Path(default_output_dir)
+        # 提前构造，避免每次 run() 都重新调用 get_config() 和 require_prompt_fields()
+        self._case_generator = CaseGeneratorNode(llm=llm)
 
     @classmethod
     def create_default(cls, loader, cleaner, retrieval_engine, artifacts, llm):
@@ -60,11 +66,6 @@ class TestCaseGenerationWorkflow:
             generation_mode=generation_mode,
             kb_samples=request.kb_samples,
         )
-        # ── Inline pipeline (Step 1-5) ──
-        from src.domain.artifacts.test_design_artifact import TestDesignArtifact
-        from src.domain.test_design.execution_plan import ExecutionAction, ExecutionPlan
-        from src.domain.test_design.test_point import TestPoint
-        from src.domain.test_design.test_scenario import TestScenario
         from src.services.requirement_ir_builder import RequirementIRBuilder
 
         builder = RequirementIRBuilder(llm=self._llm)
@@ -72,28 +73,10 @@ class TestCaseGenerationWorkflow:
         if context.requirement_ir is None:
             raise ValueError("LLM 未能生成有效的 RequirementIR。")
 
-        ir = context.requirement_ir
-        points = []
-        for idx, f in enumerate(ir.features, start=1):
-            points.append(TestPoint(id=f"TP{idx:03d}", title=f.name, feature_id=f.id, priority=f.priority, test_type="功能", risk_level="medium", source=f"feature:{f.id}", hints=list(f.test_hints)))
-        for idx, r in enumerate(ir.business_rules, start=1):
-            points.append(TestPoint(id=f"TP{len(points)+1:03d}", title=r.description, priority="P1", test_type="规则", risk_level="medium", source=f"rule:{r.id}", hints=[r.condition, r.outcome]))
-        if not points:
-            points.append(TestPoint(id="TP001", title=context.module, priority="P0", test_type="功能", source="requirement"))
-        context.test_points = points
-
-        scenarios = []
-        for idx, pt in enumerate(points, start=1):
-            scenarios.append(TestScenario(id=f"SC{idx:03d}", title=pt.title, point_id=pt.id, precondition="无", steps_intent=[f"验证 {pt.title}"], expected_intent=[f"{pt.title} 符合需求"], data_state="normal", priority=pt.priority, test_type=pt.test_type, execution_intent=ExecutionPlan(actions=[ExecutionAction(action="verify", target=pt.title, locator_hints=[pt.title])], assertions=[pt.title], locator_hints=[pt.title])))
-        context.scenarios = scenarios
-
-        case_gen = CaseGeneratorNode(llm=self._llm)
-        context = await case_gen.execute(context)
-
-        context.artifact = TestDesignArtifact(module=context.module, generation_mode=context.generation_mode, requirement_ir=context.requirement_ir, test_points=context.test_points, scenarios=context.scenarios, test_cases=context.test_cases, metadata={"kb_samples_used": bool(context.kb_samples.strip()), "source_length": len(context.requirement_text)})
-
-        if context.artifact is None:
-            raise ValueError("Workflow did not produce a TestDesignArtifact.")
+        context.test_points = self._build_test_points_from_ir(context.requirement_ir, context.module)
+        context.scenarios = self._build_scenarios(context.test_points)
+        context = await self._case_generator.execute(context)
+        context.artifact = self._build_artifact(context)
         return TestCaseGenerationData(
             module=module,
             kb_samples=request.kb_samples,
@@ -121,35 +104,12 @@ class TestCaseGenerationWorkflow:
             kb_samples=request.kb_samples,
             requirement_ir=_requirement_ir_from_analysis_graph(graph, module),
         )
-        # ── Inline pipeline (skip RequirementIR, use graph directly) ──
-        from src.domain.artifacts.test_design_artifact import TestDesignArtifact
-        from src.domain.test_design.execution_plan import ExecutionAction, ExecutionPlan
-        from src.domain.test_design.test_point import TestPoint
-        from src.domain.test_design.test_scenario import TestScenario
-
-        features = graph.get("features", [])
-        rules = graph.get("business_rules", [])
-        points = []
-        for idx, f in enumerate(features, start=1):
-            points.append(TestPoint(id=f"TP{idx:03d}", title=f.get("name",""), feature_id=f.get("id",""), priority=f.get("priority","P1"), test_type="功能", risk_level=f.get("risk_level","medium"), source=f"feature:{f.get('id','')}", hints=list(f.get("test_focus",[]))))
-        for idx, r in enumerate(rules, start=1):
-            points.append(TestPoint(id=f"TP{len(points)+1:03d}", title=r.get("description",""), priority="P1", test_type="规则", risk_level="medium", source=f"rule:{r.get('id','')}", hints=[r.get("condition",""), r.get("outcome","")]))
-        if not points:
-            points.append(TestPoint(id="TP001", title=module, priority="P0", test_type="功能", source="requirement"))
-        context.test_points = points
-
-        scenarios = []
-        for idx, pt in enumerate(points, start=1):
-            scenarios.append(TestScenario(id=f"SC{idx:03d}", title=pt.title, point_id=pt.id, precondition="无", steps_intent=[f"验证 {pt.title}"], expected_intent=[f"{pt.title} 符合需求"], data_state="normal", priority=pt.priority, test_type=pt.test_type, execution_intent=ExecutionPlan(actions=[ExecutionAction(action="verify", target=pt.title, locator_hints=[pt.title])], assertions=[pt.title], locator_hints=[pt.title])))
-        context.scenarios = scenarios
-
-        case_gen = CaseGeneratorNode(llm=self._llm)
-        context = await case_gen.execute(context)
-
-        context.artifact = TestDesignArtifact(module=context.module, generation_mode=context.generation_mode, requirement_ir=context.requirement_ir, test_points=context.test_points, scenarios=context.scenarios, test_cases=context.test_cases, metadata={"kb_samples_used": bool(context.kb_samples.strip()), "source_length": len(context.requirement_text)})
-
-        if context.artifact is None:
-            raise ValueError("Workflow did not produce a TestDesignArtifact.")
+        context.test_points = self._build_test_points_from_graph(
+            graph.get("features", []), graph.get("business_rules", []), module
+        )
+        context.scenarios = self._build_scenarios(context.test_points)
+        context = await self._case_generator.execute(context)
+        context.artifact = self._build_artifact(context)
         return TestCaseGenerationData(
             module=module,
             kb_samples=request.kb_samples,
@@ -288,7 +248,98 @@ class TestCaseGenerationWorkflow:
             summary=render_generation_summary(generation, workbook, automation_json),
         )
 
+    @staticmethod
+    def _build_test_points_from_ir(ir: RequirementIR, module: str) -> list[TestPoint]:
+        points: list[TestPoint] = []
+        for idx, f in enumerate(ir.features, start=1):
+            points.append(TestPoint(
+                id=f"TP{idx:03d}",
+                title=f.name,
+                feature_id=f.id,
+                priority=f.priority,
+                test_type="功能",
+                risk_level="medium",
+                source=f"feature:{f.id}",
+                hints=list(f.test_hints),
+            ))
+        for r in ir.business_rules:
+            points.append(TestPoint(
+                id=f"TP{len(points)+1:03d}",
+                title=r.description,
+                priority="P1",
+                test_type="规则",
+                risk_level="medium",
+                source=f"rule:{r.id}",
+                hints=[r.condition, r.outcome],
+            ))
+        if not points:
+            points.append(TestPoint(id="TP001", title=module, priority="P0", test_type="功能", source="requirement"))
+        return points
 
+    @staticmethod
+    def _build_test_points_from_graph(features: list, rules: list, module: str) -> list[TestPoint]:
+        points: list[TestPoint] = []
+        for idx, f in enumerate(features, start=1):
+            points.append(TestPoint(
+                id=f"TP{idx:03d}",
+                title=f.get("name", ""),
+                feature_id=f.get("id", ""),
+                priority=f.get("priority", "P1"),
+                test_type="功能",
+                risk_level=f.get("risk_level", "medium"),
+                source=f"feature:{f.get('id', '')}",
+                hints=list(f.get("test_focus", [])),
+            ))
+        for r in rules:
+            points.append(TestPoint(
+                id=f"TP{len(points)+1:03d}",
+                title=r.get("description", ""),
+                priority="P1",
+                test_type="规则",
+                risk_level="medium",
+                source=f"rule:{r.get('id', '')}",
+                hints=[r.get("condition", ""), r.get("outcome", "")],
+            ))
+        if not points:
+            points.append(TestPoint(id="TP001", title=module, priority="P0", test_type="功能", source="requirement"))
+        return points
+
+    @staticmethod
+    def _build_scenarios(points: list[TestPoint]) -> list[TestScenario]:
+        return [
+            TestScenario(
+                id=f"SC{idx:03d}",
+                title=pt.title,
+                point_id=pt.id,
+                precondition="无",
+                steps_intent=[f"验证 {pt.title}"],
+                expected_intent=[f"{pt.title} 符合需求"],
+                data_state="normal",
+                priority=pt.priority,
+                test_type=pt.test_type,
+                execution_intent=ExecutionPlan(
+                    actions=[ExecutionAction(action="verify", target=pt.title, locator_hints=[pt.title])],
+                    assertions=[pt.title],
+                    locator_hints=[pt.title],
+                ),
+            )
+            for idx, pt in enumerate(points, start=1)
+        ]
+
+    @staticmethod
+    def _build_artifact(context: WorkflowContext) -> TestDesignArtifact:
+        return TestDesignArtifact(
+            module=context.module,
+            generation_mode=context.generation_mode,
+            requirement_ir=context.requirement_ir,
+            test_points=context.test_points,
+            scenarios=context.scenarios,
+            test_cases=context.test_cases,
+            metadata={
+                "kb_samples_used": bool(context.kb_samples.strip()),
+                "source_length": len(context.requirement_text),
+            },
+        )
 
 
 def render_generation_summary(

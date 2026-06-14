@@ -29,7 +29,8 @@ class XlsxReader(BaseReader):
             raise IngestionError(f"Failed to open Excel file: {path} — {e}") from e
 
         sheet_names = wb.sheetnames
-        all_parts: list[str] = []
+        source_format = path.suffix.lower().lstrip(".")
+        segments: list[dict] = []
 
         for sheet_name in sheet_names:
             ws = wb[sheet_name]
@@ -41,10 +42,7 @@ class XlsxReader(BaseReader):
             headers = [str(h) if h is not None else "" for h in rows[0]]
             data_rows = rows[1:]
 
-            sheet_lines: list[str] = [f"## Sheet: {sheet_name}", ""]
-
             if not data_rows:
-                all_parts.append(f"## Sheet: {sheet_name}\n(empty)")
                 continue
 
             for row_idx, row in enumerate(data_rows, start=2):
@@ -56,16 +54,24 @@ class XlsxReader(BaseReader):
                         parts.append(f"{header}: {cell_text}")
 
                 if parts:
-                    sheet_lines.append(f"[Row {row_idx}] {' | '.join(parts)}")
-
-            all_parts.append("\n".join(sheet_lines))
+                    row_text = f"[Sheet: {sheet_name}] [Row {row_idx}] {' | '.join(parts)}"
+                    segments.append({
+                        "content": row_text,
+                        "metadata": {
+                            "sheet_name": sheet_name,
+                            "row_index": row_idx,
+                            "row_id": f"{sheet_name}_{row_idx}",
+                            "source_format": source_format,
+                        },
+                    })
 
         wb.close()
 
-        content = "\n\n".join(all_parts)
+        # 全文字符串不用于分块（segments 已包含所有行内容），置空以节省内存
+        content = ""
         metadata: dict = {
             "sheets": sheet_names,
-            "format": "xlsx",
+            "format": source_format,
         }
 
         return Document(
@@ -73,6 +79,7 @@ class XlsxReader(BaseReader):
             source_path=str(path.resolve()),
             content=content,
             metadata=metadata,
+            segments=segments,
         )
 
     def supported_extensions(self) -> list[str]:

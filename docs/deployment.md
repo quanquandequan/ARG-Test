@@ -8,16 +8,14 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env  # edit with your API keys
 
-# Start API with auto-reload
-uvicorn src.api.app:create_app --factory --host 0.0.0.0 --port 8000 --reload
-
 # Ingest documents
 python scripts/ingest_docs.py --dir ./data/documents
 
-# Query
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "你的问题"}'
+# Start interactive chat
+rag chat
+
+# Debug mode (shows tool calls and full logs)
+rag chat -d
 ```
 
 Note:
@@ -29,18 +27,14 @@ Note:
 pip install -e ".[dev]"
 ```
 
-## Docker Compose (Production)
+## Docker Compose (Milvus Standalone)
 
 ```bash
-# Set API keys
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
-
-# Start stack (Milvus + etcd + MinIO + API)
+# Start Milvus stack (etcd + MinIO + Milvus)
 docker compose up -d
 
 # Monitor
-docker compose logs -f api
+docker compose logs -f milvus
 ```
 
 ## Configuration

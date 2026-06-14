@@ -18,6 +18,8 @@ class RetrievalEngine:
         self,
         dense_retriever: DenseRetriever,
         reranker: BaseReranker,
+        top_k: int = 20,
+        final_k: int = 5,
     ):
         if reranker is None:
             raise ValueError(
@@ -26,18 +28,22 @@ class RetrievalEngine:
             )
         self._dense_retriever = dense_retriever
         self._reranker = reranker
+        self._top_k = top_k
+        self._final_k = final_k
 
     async def search(
         self,
         query: str,
-        top_k: int = 20,
-        final_k: int = 5,
+        top_k: int | None = None,
+        final_k: int | None = None,
         filters: dict | None = None,
     ) -> list[SearchResult]:
         """运行 retrieve -> rerank 并返回排序后的 chunks。"""
+        resolved_top_k = top_k if top_k is not None else self._top_k
+        resolved_final_k = final_k if final_k is not None else self._final_k
         candidates = await self.retrieve_candidates(
             query=query,
-            top_k=top_k,
+            top_k=resolved_top_k,
             filters=filters,
         )
         if not candidates:
@@ -45,7 +51,7 @@ class RetrievalEngine:
         return await self.rerank_candidates(
             query=query,
             candidates=candidates,
-            top_k=final_k,
+            top_k=resolved_final_k,
         )
 
     async def retrieve_candidates(

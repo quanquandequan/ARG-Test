@@ -27,8 +27,9 @@ class DenseRetriever:
         filters: dict | None = None,
     ) -> list[SearchResult]:
         query_vec = self._embedder.embed_query(query)
+        # 用 is not None 而非 or，避免 top_k=0 被误判为 falsy 而回退到默认值
         results = self._vectordb.search(
-            query_vec, top_k=top_k or self._top_k, filters=filters
+            query_vec, top_k=top_k if top_k is not None else self._top_k, filters=filters
         )
         if self._threshold > 0:
             kept = [r for r in results if r.score >= self._threshold]

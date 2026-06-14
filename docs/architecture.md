@@ -15,16 +15,9 @@ The architecture has two main layers:
 
 ```
 ┌─────────────────────────── User ───────────────────────────────┐
-│  REST /query (JSON)           REST /query/stream (SSE)         │
-│  CLI: rag ask "…"             CLI: rag ask -s "…"              │
+│  CLI: rag chat                CLI: rag chat -d (调试模式)       │
 └───────────────────────────────┬────────────────────────────────┘
-                                │  QueryRequest + trace_id
-                                ▼
-┌─────────────────────── FastAPI Layer ──────────────────────────┐
-│  POST /query          →  agent.run(query, history, trace_id)   │
-│  POST /query/stream   →  agent.run_stream(...)                 │
-└───────────────────────────────┬────────────────────────────────┘
-                                │
+                                │  query + history
                                 ▼
 ┌──────────────────────── ReActAgent ────────────────────────────┐
 │                                                                │
@@ -92,24 +85,19 @@ class BaseTool(ABC):
 
 `ToolRegistry.definitions()` returns the schema list; each LLM provider converts it to its own wire format (`_tools_to_anthropic` / `_tools_to_openai`).
 
-Public tool surface is **profile-driven** — the shipped default profile exposes only the
-four high-level tools, while `mobile_debug` keeps the low-level Appium tools for debugging:
+工具列表由 `configs/default.yaml` 的 `agent.tools` 统一管理：
 
 ```yaml
 agent:
-  profiles:
-    qa_agent:
-      tools:
-        - search_knowledge
-        - analyze_requirement
-        - design_test_cases
-        - execute_scenario
-    mobile_debug:
-      tools:
-        - device_tool
-        - screen_tool
-        - action_tool
-        - assertion_tool
+  tools:
+    - search_knowledge
+    - analyze_requirement
+    - design_test_cases
+    - execute_scenario
+    - device_tool
+    - screen_tool
+    - action_tool
+    - assertion_tool
 ```
 
 ---
@@ -130,16 +118,6 @@ Iteration i:
 If max_iterations reached:
   force one final generate_chat without tools → summarise
 ```
-
-SSE events emitted by `run_stream`:
-
-| Event | Payload | When |
-|-------|---------|------|
-| `start` | `{trace_id}` | Before first LLM call |
-| `tool_call` | `{tools[], iteration}` | Each time LLM calls tools |
-| `tool_result` | `{tool, result_len, duration_ms}` | After each tool returns |
-| `token` | `{text}` | Streaming final answer, per token |
-| `answer` | `{text}` | Full consolidated answer |
 
 ---
 
@@ -205,28 +183,12 @@ MilvusStore.insert()
 
 ---
 
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/query` | Agent Q&A; returns `answer`, `citations`, `steps`, `processing_stages`, `trace_id` |
-| `POST` | `/query/stream` | SSE streaming (see events table above) |
-| `POST` | `/documents/ingest` | Upload and index a document |
-| `DELETE` | `/documents/{id}` | Remove all chunks for a document |
-| `GET` | `/health` | Liveness |
-| `GET` | `/health/ready` | Readiness (embedder + vectordb + reranker + llm) |
-
----
-
 ## CLI
 
 ```bash
-rag ask "你的问题"              # Non-streaming query
-rag ask -s "你的问题"           # Streaming (token-by-token)
-rag ask -v "你的问题"           # Verbose: show trace_id, tool calls, timing
-rag chat                        # Interactive multi-turn chat
-rag chat -v                     # Interactive + verbose
-rag --env production ask "..."  # Use production config
+rag chat                        # 交互式对话（精简模式，无日志）
+rag chat -d                     # 调试模式（显示工具调用与详细日志）
+rag --env production chat       # 使用 production 配置
 ```
 
 ---
@@ -239,15 +201,16 @@ All runtime behaviour is controlled by `configs/default.yaml` (override per envi
 agent:
   max_iterations: 10
   max_history_tokens: 4000    # sliding-window token budget
-  profiles:
-    qa_agent:
-      tools:
-        - search_knowledge
-        - analyze_requirement
-        - design_test_cases
-        - execute_scenario
-  system_prompt: |
-    …
+  system_prompt_id: agent     # 指向 prompts.agent.system_prompt
+  tools:
+    - search_knowledge
+    - analyze_requirement
+    - design_test_cases
+    - execute_scenario
+    - device_tool
+    - screen_tool
+    - action_tool
+    - assertion_tool
 
 retrieval:
   top_k: 20    # ANN candidates
@@ -270,9 +233,7 @@ llm:
 | 2 | Concurrent tool execution | `asyncio.gather` — multiple tool calls in one iteration run in parallel |
 | 3 | Config-driven tool list | Add/remove tools in YAML without code changes |
 | 4 | Sliding-window history | Prevents context overflow without a per-provider tokeniser |
-| 5 | trace_id end-to-end | UUID propagated through logs and API response for distributed tracing |
+| 5 | trace_id end-to-end | UUID propagated through logs for distributed tracing |
 | 6 | per-step `duration_ms` | surfaced in `AgentStep` and `processing_stages` for latency observability |
-| 7 | Token streaming | `run_stream` uses `generate_chat_stream` → per-token `event: token` SSE |
-| 8 | WebSearch best-effort | Documented as scraping — replace with stable API for production |
-| 9 | Two-stage retrieval | Dense recall (top-20) + cross-encoder rerank (top-5) |
-| 10 | Unified citations | `Citation` dataclass flows from Agent through API without conversion loss |
+| 7 | WebSearch best-effort | Documented as scraping — replace with stable API for production |
+| 8 | Two-stage retrieval | Dense recall (top-20) + cross-encoder rerank (top-5) |

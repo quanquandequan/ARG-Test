@@ -41,7 +41,7 @@ class SearchKnowledgeTool(BaseTool):
                 },
                 "need_fresh_info": {
                     "type": "boolean",
-                    "description": "是否明确需要实时互联网信息；知识库有命中时仍不追加网页结果",
+                    "description": "是否明确需要实时互联网信息；为 true 时无论知识库是否命中都会补充网页结果",
                 },
                 "top_k": {
                     "type": "integer",
@@ -76,7 +76,7 @@ class SearchKnowledgeTool(BaseTool):
             top_k=top_k,
             filters=filters,
         )
-        should_use_web = kb_result.hit_count == 0
+        should_use_web = kb_result.hit_count == 0 or need_fresh_info
 
         lines = ["【知识库结果】", kb_result.content]
         if should_use_web:
@@ -84,6 +84,7 @@ class SearchKnowledgeTool(BaseTool):
                 query=query,
                 num_results=num_web_results,
             )
-            lines += ["", "【网页结果（知识库无命中时补充）】", web_result]
+            reason = "需要实时信息" if need_fresh_info else "知识库无命中"
+            lines += ["", f"【网页结果（{reason}）】", web_result]
 
         return "\n".join(lines)

@@ -14,6 +14,9 @@ class Document:
     content: str
     metadata: dict = field(default_factory=dict)
     # metadata 包含 title、author、page_count、sections、tables 等。
+    # segments 非空时，每个元素为 {content: str, metadata: dict}，
+    # 代表天然边界文本块（如 Excel 行），IngestionPipeline 会直接一段一 chunk。
+    segments: list[dict] = field(default_factory=list)
 
 
 class BaseReader(ABC):

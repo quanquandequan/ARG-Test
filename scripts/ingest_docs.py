@@ -8,12 +8,14 @@
 
 import argparse
 import sys
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+warnings.filterwarnings("ignore", category=FutureWarning, module="pymilvus")
+
 from tqdm import tqdm
 
-# 将项目根目录加入路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.core.config import load_config
@@ -30,6 +32,7 @@ def main():
     parser.add_argument("--collection", default=None, help="Milvus collection name")
     parser.add_argument("--env", default="development", help="Config environment")
     parser.add_argument("--workers", type=int, default=4, help="Parallel workers")
+    parser.add_argument("--recreate", action="store_true", help="重建 collection（删除旧数据后重建）")
     args = parser.parse_args()
 
     load_config(args.env)
@@ -55,24 +58,21 @@ def main():
     embedder.load()
     vectordb = get_vectordb()
 
-    if args.collection:
+    if args.recreate:
+        from src.core.config import get_config
+        collection_name = args.collection or get_config().get("vectordb", {}).get("collection_name", "knowledge_base")
+        logger.info("recreating_collection", collection=collection_name)
+        vectordb.create_collection(collection_name, embedder.dim(), drop_existing=True)
+    elif args.collection:
         vectordb.create_collection(args.collection, embedder.dim(), drop_existing=False)
 
-    pipeline = IngestionPipeline()
+    pipeline = IngestionPipeline(embedder=embedder, vectordb=vectordb)
 
     total_chunks = 0
 
     def process_file(path: Path):
-        doc, chunks = pipeline.ingest(path)
-        texts = [c.content for c in chunks]
-        vectors = embedder.embed_documents(texts)
-        rows = [
-            (c.id, c.document_id, c.content, c.chunk_index, vec,
-             {"source_path": str(path)})  # 元数据
-            for c, vec in zip(chunks, vectors)
-        ]
-        vectordb.insert(rows)
-        return len(chunks)
+        result = pipeline.ingest_and_store(path)
+        return len(result.chunks)
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {executor.submit(process_file, fp): fp for fp in files}

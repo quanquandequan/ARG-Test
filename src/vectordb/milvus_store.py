@@ -1,5 +1,7 @@
 """Milvus 向量存储，支持 Lite（开发）和 Standalone（生产）模式。"""
 
+import threading
+
 import numpy as np
 
 from src.core.config import get_config
@@ -27,30 +29,37 @@ class MilvusStore(BaseVectorDB):
         self._metric_type = cfg.get("metric_type", "COSINE")
         self._index_params = dict(cfg.get("index_params", {"nlist": 128}))
         self._client = None
+        # 多线程写入保护锁（MilvusLite 单文件不支持并发写）
+        self._lock = threading.Lock()
 
     def _connect(self) -> None:
+        # 快速路径：已连接则直接返回
         if self._client is not None:
             return
-        try:
-            from pymilvus import connections
-            if self._mode == "lite":
-                connections.connect(alias="default", uri=self._uri)
-            else:
-                host = get_config().get("vectordb", {}).get("host", "localhost")
-                port = get_config().get("vectordb", {}).get("port", 19530)
-                connections.connect(alias="default", host=host, port=port)
-            self._client = "default"
-            logger.info("milvus_connected", mode=self._mode, uri=self._uri)
-        except ModuleNotFoundError as e:
-            if self._mode == "lite" and e.name == "milvus_lite":
-                raise ConnectionError(
-                    "Failed to connect to Milvus Lite: missing 'milvus_lite' runtime. "
-                    "Install dependencies with: pip install -e \".[dev]\" "
-                    "or pip install \"pymilvus[milvus_lite]>=2.4\""
-                ) from e
-            raise ConnectionError(f"Failed to connect to Milvus: {e}") from e
-        except Exception as e:
-            raise ConnectionError(f"Failed to connect to Milvus: {e}") from e
+        # 双重检查锁：避免多线程并发重复连接 pymilvus 全局 connections 单例
+        with self._lock:
+            if self._client is not None:
+                return
+            try:
+                from pymilvus import connections
+                if self._mode == "lite":
+                    connections.connect(alias="default", uri=self._uri)
+                else:
+                    host = get_config().get("vectordb", {}).get("host", "localhost")
+                    port = get_config().get("vectordb", {}).get("port", 19530)
+                    connections.connect(alias="default", host=host, port=port)
+                self._client = "default"
+                logger.info("milvus_connected", mode=self._mode, uri=self._uri)
+            except ModuleNotFoundError as e:
+                if self._mode == "lite" and e.name == "milvus_lite":
+                    raise ConnectionError(
+                        "Failed to connect to Milvus Lite: missing 'milvus_lite' runtime. "
+                        "Install dependencies with: pip install -e \".[dev]\" "
+                        "or pip install \"pymilvus[milvus_lite]>=2.4\""
+                    ) from e
+                raise ConnectionError(f"Failed to connect to Milvus: {e}") from e
+            except Exception as e:
+                raise ConnectionError(f"Failed to connect to Milvus: {e}") from e
 
     def _ensure_collection_exists(self, name: str) -> None:
         from pymilvus import utility
@@ -111,7 +120,6 @@ class MilvusStore(BaseVectorDB):
 
         self._connect()
         self._ensure_collection_exists(self._collection_name)
-        collection = Collection(self._collection_name)
 
         ids, doc_ids, contents, indices, vectors, metadatas = [], [], [], [], [], []
         for cid, doc_id, content, chunk_idx, vec, meta in chunks_with_vectors:
@@ -122,8 +130,11 @@ class MilvusStore(BaseVectorDB):
             vectors.append(vec.tolist() if isinstance(vec, np.ndarray) else vec)
             metadatas.append(meta)
 
-        collection.insert([ids, doc_ids, contents, indices, vectors, metadatas])
-        collection.flush()
+        # 持锁写入：MilvusLite 单文件不支持并发 insert+flush，序列化保证数据安全
+        with self._lock:
+            collection = Collection(self._collection_name)
+            collection.insert([ids, doc_ids, contents, indices, vectors, metadatas])
+            collection.flush()
         logger.debug("milvus_inserted", count=len(ids))
 
     def search(

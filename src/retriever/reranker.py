@@ -56,7 +56,8 @@ class BgeReranker(BaseReranker):
         if self._model is None:
             self.load()
 
-        top_k = top_k or get_config().get("retrieval", {}).get("final_k", 5)
+        # 用 is not None 而非 or，避免 top_k=0 被 falsy 短路而读取 config 默认值
+        top_k = top_k if top_k is not None else get_config().get("retrieval", {}).get("final_k", 5)
 
         def _compute():
             pairs = [(query, c.content) for c in candidates]

@@ -39,7 +39,7 @@ vectordb:
 
 retrieval:
   top_k: 20             # 向量搜索初始召回数
-  final_k: 5            # 重排后的最终数量
+  final_k: 8            # 重排后的最终数量
   similarity_threshold: 0.3
 
 reranker:

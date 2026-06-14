@@ -16,6 +16,9 @@ from src.core.utils import suppress_grpc_stderr
 suppress_grpc_stderr()
 # --------------------------------------------------------------------------
 
+import warnings  # noqa: E402
+warnings.filterwarnings("ignore", category=FutureWarning, module="pymilvus")
+
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
 import logging  # noqa: E402
@@ -36,7 +39,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 
 async def _run_chat(args):
-    from src.api.dependencies import get_agent  # noqa: PLC0415
+    from src.core.container import get_agent  # noqa: PLC0415
     from src.core.config import load_config  # noqa: PLC0415
     from src.core.logging import setup_logging  # noqa: PLC0415
     from src.llm.types import Message  # noqa: PLC0415

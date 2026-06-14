@@ -1,5 +1,6 @@
 """IngestionPipeline 编排 load → clean → chunk → embed → persist 流程。"""
 
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,11 +45,27 @@ class IngestionPipeline:
         doc = self._loader.load(path)
         logger.info("document_loaded", path=str(path), doc_id=doc.id)
 
-        doc.content = self._cleaner.clean(doc.content)
-        logger.debug("document_cleaned", doc_id=doc.id, length=len(doc.content))
-
-        chunks = self._chunker.split(doc.id, doc.content)
-        logger.info("document_chunked", doc_id=doc.id, chunk_count=len(chunks))
+        if doc.segments:
+            # 结构化文档（Excel）：全文字符串仅用于调试，段落内容单独清洗，跳过全文清洗
+            chunks = []
+            for seg in doc.segments:
+                cleaned = self._cleaner.clean(seg["content"])  # 对每行内容单独清洗
+                # 用 Excel 行号（row_index）作为 chunk_index，与 metadata 保持一致，避免空行跳过后错位
+                row_idx = seg.get("metadata", {}).get("row_index", len(chunks))
+                chunks.append(Chunk(
+                    id=str(uuid.uuid4()),
+                    document_id=doc.id,
+                    content=cleaned,
+                    chunk_index=row_idx,
+                    metadata=dict(seg.get("metadata", {})),
+                ))
+            logger.info("document_chunked_from_segments", doc_id=doc.id, chunk_count=len(chunks))
+        else:
+            # 非结构化文档：清洗全文后走 ChineseChunker
+            doc.content = self._cleaner.clean(doc.content)
+            logger.debug("document_cleaned", doc_id=doc.id, length=len(doc.content))
+            chunks = self._chunker.split(doc.id, doc.content)
+            logger.info("document_chunked", doc_id=doc.id, chunk_count=len(chunks))
 
         return doc, chunks
 
