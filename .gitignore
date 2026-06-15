@@ -1,6 +1,11 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.DS_Store
+.idea/
+.claude/
+.pytest_cache/
+.ruff_cache/
 .env
 data/milvus_lite/
 data/documents/*
@@ -9,3 +14,4 @@ data/embeddings_cache/
 *.onnx
 .venv/
 dist/
+outputs/

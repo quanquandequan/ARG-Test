@@ -44,7 +44,7 @@ class CaseGeneratorNode(WorkflowNode):
             max_tokens if max_tokens is not None else int(cfg.get("max_tokens", 8192))
         )
         prompt = require_prompt_fields(
-            "case_generator",
+            "design_test_cases",
             [
                 "system_prompt",
                 "user_template",

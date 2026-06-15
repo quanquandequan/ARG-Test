@@ -212,11 +212,35 @@ class MilvusStore(BaseVectorDB):
         self._client = None
 
     def _build_filter_expr(self, filters: dict) -> str:
-        """根据字典构建 Milvus 标量过滤表达式。"""
+        """根据字典构建 Milvus 标量过滤表达式。
+
+        支持：
+        - 原始表达式透传：{"_raw": "..."} → 直接追加到 parts（用于复杂 not/like 条件）
+        - 顶层标量字段：{"document_id": "xxx"} → document_id == "xxx"
+        - JSON 子字段：{"metadata.source_format": "xlsx"} → metadata["source_format"] == "xlsx"
+        - 列表值（or 拼接）：{"metadata.source_format": ["xlsx", "xlsm"]}
+          → (metadata["source_format"] == "xlsx" or metadata["source_format"] == "xlsm")
+        """
         parts: list[str] = []
+        if "_raw" in filters:
+            parts.append(str(filters["_raw"]))
         for key, value in filters.items():
-            if isinstance(value, str):
-                parts.append(f'{key} == "{value}"')
-            elif isinstance(value, (int, float)):
-                parts.append(f"{key} == {value}")
+            if key == "_raw":
+                continue
+            if key.startswith("metadata."):
+                json_key = key[len("metadata."):]
+                field = f'metadata["{json_key}"]'
+                if isinstance(value, list):
+                    # Milvus JSON 子字段不支持 in 运算符，用 or 拼接
+                    or_parts = " or ".join(f'{field} == "{v}"' for v in value)
+                    parts.append(f"({or_parts})")
+                elif isinstance(value, str):
+                    parts.append(f'{field} == "{value}"')
+                elif isinstance(value, (int, float)):
+                    parts.append(f"{field} == {value}")
+            else:
+                if isinstance(value, str):
+                    parts.append(f'{key} == "{value}"')
+                elif isinstance(value, (int, float)):
+                    parts.append(f"{key} == {value}")
         return " and ".join(parts)

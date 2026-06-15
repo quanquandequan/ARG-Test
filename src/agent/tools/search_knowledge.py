@@ -5,7 +5,26 @@ from __future__ import annotations
 from src.agent.base_tool import BaseTool
 from src.agent.tools.search_kb import KnowledgeBaseTool
 from src.agent.tools.web_search import WebSearchTool
+from src.core.logging import get_logger
 from src.retriever.retrieval_engine import RetrievalEngine
+
+logger = get_logger(__name__)
+
+
+def _try_create_rewriter():
+    """创建 QueryRewriter；disabled、LLM 未配置或 prompt 缺失时静默返回 None。"""
+    try:
+        from src.core.config import get_config
+        cfg = get_config().get("query_rewriter", {})
+        if not cfg.get("enabled", True):
+            return None
+        from src.llm.factory import get_llm
+        from src.retriever.query_rewriter import QueryRewriter
+        timeout = float(cfg.get("timeout_seconds", 8.0))
+        return QueryRewriter(get_llm(), timeout_seconds=timeout)
+    except Exception as exc:
+        logger.warning("query_rewriter_unavailable", error=str(exc))
+        return None
 
 
 class SearchKnowledgeTool(BaseTool):
@@ -16,7 +35,8 @@ class SearchKnowledgeTool(BaseTool):
         retrieval_engine: RetrievalEngine,
         web_tool: WebSearchTool | None = None,
     ):
-        self._kb_tool = KnowledgeBaseTool(retrieval_engine)
+        rewriter = _try_create_rewriter()
+        self._kb_tool = KnowledgeBaseTool(retrieval_engine, query_rewriter=rewriter)
         self._web_tool = web_tool or WebSearchTool()
 
     @property
@@ -66,6 +86,7 @@ class SearchKnowledgeTool(BaseTool):
         top_k: int = 5,
         filters: dict | None = None,
         num_web_results: int = 5,
+        debug_queries: bool = False,
         **kwargs,
     ) -> str:
         if not query.strip():
@@ -75,6 +96,7 @@ class SearchKnowledgeTool(BaseTool):
             query=query,
             top_k=top_k,
             filters=filters,
+            debug_queries=debug_queries,
         )
         should_use_web = kb_result.hit_count == 0 or need_fresh_info
 

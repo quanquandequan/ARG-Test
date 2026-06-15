@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from src.agent.base_tool import BaseTool
+from src.agent.tools.kb_compressor import compress_results
+from src.retriever.query_expansion import expand_query as _expand_query
 from src.retriever.retrieval_engine import RetrievalEngine
 from src.vectordb.base import SearchResult
+
+if TYPE_CHECKING:
+    from src.retriever.query_rewriter import QueryRewriter
 
 
 @dataclass(slots=True, frozen=True)
@@ -49,7 +56,20 @@ _SOURCE_OTHER = KnowledgeSourceCategory(
     priority=3,
 )
 _BUG_MARKERS = ("bug", "buglist", "缺陷", "acn_buglist")
-_MIN_CANDIDATE_K = 120
+
+# 多 query 召回配置
+_PER_QUERY_CANDIDATE_K = 40    # 每个 query variant 的向量召回数
+_MAX_MERGED_CANDIDATES = 240   # 合并去重后进入 rerank 前处理的上限
+
+# Excel boost：Bug 列表数量庞大，全量向量搜索时容易把测试用例全部挤出 top-k，
+# 因此额外做一次仅限 Excel 的带过滤向量搜索，强制保留足量测试用例候选。
+# 注：Bug 列表也是 xlsx，通过 content not like "%Bug Key:%" 排除。
+_EXCEL_BOOST_K = 80
+_EXCEL_BOOST_EXPR = (
+    '(metadata["source_format"] == "xlsx" or metadata["source_format"] == "xlsm")'
+    ' and not (content like "%Bug Key:%")'
+)
+_EXCEL_SOURCE_FILTER: dict = {"_raw": _EXCEL_BOOST_EXPR}
 
 
 class KnowledgeBaseTool(BaseTool):
@@ -59,8 +79,14 @@ class KnowledgeBaseTool(BaseTool):
     返回带来源引用的格式化文档片段。
     """
 
-    def __init__(self, retrieval_engine: RetrievalEngine):
+    def __init__(
+        self,
+        retrieval_engine: RetrievalEngine,
+        query_rewriter: "QueryRewriter | None" = None,
+    ):
         self._retrieval_engine = retrieval_engine
+        # LLM 改写器：有则用 LLM 扩展，无则回退规则扩展（UI 别名）
+        self._query_rewriter = query_rewriter
 
     @property
     def name(self) -> str:
@@ -100,9 +126,15 @@ class KnowledgeBaseTool(BaseTool):
         query: str = "",
         top_k: int = 5,
         filters: dict | None = None,
+        debug_queries: bool = False,
         **kwargs,
     ) -> str:
-        result = await self.search_typed(query=query, top_k=top_k, filters=filters)
+        result = await self.search_typed(
+            query=query,
+            top_k=top_k,
+            filters=filters,
+            debug_queries=debug_queries,
+        )
         return result.content
 
     async def search_typed(
@@ -110,14 +142,52 @@ class KnowledgeBaseTool(BaseTool):
         query: str = "",
         top_k: int = 5,
         filters: dict | None = None,
+        expand_query: bool = True,
+        max_query_variants: int = 5,
+        debug_queries: bool = False,
     ) -> KnowledgeSearchResult:
-        """返回带命中数量的结构化检索结果，供复合工具判断 fallback。"""
-        candidate_k = max(_MIN_CANDIDATE_K, top_k * 12)
-        candidates = await self._retrieval_engine.retrieve_candidates(
-            query=query,
-            top_k=candidate_k,
-            filters=filters,
+        """返回带命中数量的结构化检索结果，供复合工具判断 fallback。
+
+        expand_query=True 时自动扩展检索 query，提高召回面；
+        rerank 始终使用原始 query，避免扩展词影响相关度排序。
+        """
+        per_query_k = max(_PER_QUERY_CANDIDATE_K, top_k * 8)
+
+        # 生成 query variants：优先用 LLM 改写，回退到规则扩展（UI 别名）
+        if expand_query and max_query_variants > 1:
+            if self._query_rewriter is not None:
+                variants = await self._query_rewriter.rewrite(
+                    query, max_variants=max_query_variants
+                )
+                # LLM 超时/失败时 variants == [query]，叠加规则扩展补充召回面
+                if len(variants) <= 1:
+                    variants = _expand_query(query, max_variants=max_query_variants)
+            else:
+                variants = _expand_query(query, max_variants=max_query_variants)
+        else:
+            variants = [query]
+
+        # 1. 并发召回所有 variants 的候选（全量，无来源过滤）
+        raw_candidates = await _multi_query_candidates(
+            self._retrieval_engine, variants, per_query_k, filters
         )
+        # 2. Excel 专项召回：Bug 列表数量庞大，全量搜索时常把测试用例挤出 top-k；
+        #    用 source_format 过滤做额外一次向量搜索，强制把 Excel 候选纳入池中。
+        excel_filter = dict(_EXCEL_SOURCE_FILTER)
+        if filters:
+            excel_filter.update(filters)
+        excel_boost = await self._retrieval_engine.retrieve_candidates(
+            query=query,  # 用原始 query 做 Excel 专项召回，避免扩展词引入噪声
+            top_k=_EXCEL_BOOST_K,
+            filters=excel_filter,
+        )
+        raw_candidates = raw_candidates + excel_boost
+
+        raw_count = len(raw_candidates)
+        candidates = _stable_dedup(raw_candidates)
+        candidates = candidates[:_MAX_MERGED_CANDIDATES]
+        dedup_count = len(candidates)
+
         if not candidates:
             return KnowledgeSearchResult(
                 content="未找到相关文档。",
@@ -126,6 +196,7 @@ class KnowledgeBaseTool(BaseTool):
             )
 
         rerank_pool = _build_source_aware_rerank_pool(candidates, top_k)
+        # rerank 始终用原始 query，不受扩展词影响
         results = await self._retrieval_engine.rerank_candidates(
             query=query,
             candidates=rerank_pool,
@@ -140,13 +211,115 @@ class KnowledgeBaseTool(BaseTool):
             )
 
         results = _sort_by_source_priority(results)
-        lines = _format_grouped_results(results)
+        compressed = compress_results(results, query)
+        lines = _format_grouped_results(results, compressed)
+
+        if debug_queries:
+            lines = [
+                _build_debug_header(query, variants, raw_count, dedup_count, len(rerank_pool))
+            ] + lines
+
         return KnowledgeSearchResult(
             content="\n\n".join(lines),
             hit_count=len(results),
             results=list(results),
         )
 
+
+# ── 多 query 并发召回 ─────────────────────────────────────────────────────────
+
+async def _multi_query_candidates(
+    engine: RetrievalEngine,
+    variants: list[str],
+    per_query_k: int,
+    filters: dict | None,
+) -> list[SearchResult]:
+    """并发为每个 query variant 召回候选，合并返回（未去重）。"""
+    tasks = [
+        engine.retrieve_candidates(query=v, top_k=per_query_k, filters=filters)
+        for v in variants
+    ]
+    batches = await asyncio.gather(*tasks)
+    merged: list[SearchResult] = []
+    for batch in batches:
+        merged.extend(batch)
+    return merged
+
+
+# ── 稳定去重（多 query 合并用） ───────────────────────────────────────────────
+
+def _stable_dedup(results: list[SearchResult]) -> list[SearchResult]:
+    """多 query 合并后去重：按稳定元数据 key > UUID > 内容哈希三层兜底。
+
+    稳定 key 使 Excel 同一行通过不同 query 命中时只保留一条，
+    比单纯依赖 UUID 更健壮（抵御极端情况下的 ID 漂移）。
+    """
+    seen_stable: set[str] = set()
+    seen_ids: set[str] = set()
+    seen_content: set[int] = set()
+    deduped: list[SearchResult] = []
+
+    for result in results:
+        meta = dict(result.metadata or {})
+        stable_key = _build_stable_key(result, meta)
+        row_id = result.id or ""
+        content_key = hash(result.content)
+
+        if stable_key and stable_key in seen_stable:
+            continue
+        if row_id and row_id in seen_ids:
+            continue
+        if content_key in seen_content:
+            continue
+
+        if stable_key:
+            seen_stable.add(stable_key)
+        if row_id:
+            seen_ids.add(row_id)
+        seen_content.add(content_key)
+        deduped.append(result)
+
+    return deduped
+
+
+def _build_stable_key(result: SearchResult, meta: dict) -> str:
+    """构建稳定去重 key：Excel 行用 source+sheet+row；其他用 doc+chunk。"""
+    source_name = str(meta.get("source_name") or "").strip()
+    sheet_name = str(meta.get("sheet_name") or "").strip()
+    row_index = meta.get("row_index")
+
+    if source_name and sheet_name and row_index is not None:
+        return f"xlsx:{source_name}:{sheet_name}:{row_index}"
+
+    doc_id = str(result.document_id or "").strip()
+    chunk_index = meta.get("chunk_index")
+    if doc_id and chunk_index is not None:
+        return f"doc:{doc_id}:{chunk_index}"
+
+    return ""  # 兜底由内容哈希去重
+
+
+# ── Debug 输出 ────────────────────────────────────────────────────────────────
+
+def _build_debug_header(
+    original_query: str,
+    variants: list[str],
+    raw_count: int,
+    dedup_count: int,
+    pool_size: int,
+) -> str:
+    lines = ["【检索调试】", f"原始 query: {original_query}"]
+    if len(variants) > 1:
+        lines.append("扩展 query:")
+        for i, v in enumerate(variants, 1):
+            lines.append(f"  {i}. {v}")
+    else:
+        lines.append("（未启用 query 扩展）")
+    lines.append(f"候选统计: raw={raw_count}, dedup={dedup_count}, rerank_pool={pool_size}")
+    return "\n".join(lines)
+
+
+# ── 来源分类 ──────────────────────────────────────────────────────────────────
 
 def classify_knowledge_source(result: SearchResult) -> KnowledgeSourceCategory:
     """识别知识库片段来源，兼容旧库的 source_path 元数据。"""
@@ -206,7 +379,7 @@ def _build_source_aware_rerank_pool(
     xmind = _by_category(candidates, "xmind")
     other = _by_category(candidates, "other")
 
-    pool = []
+    pool: list[SearchResult] = []
     pool.extend(excel)
     pool.extend(bug[: max(top_k, 10)])
     pool.extend(xmind[: max(top_k, 10)])
@@ -250,18 +423,28 @@ def _by_category(results: list[SearchResult], key: str) -> list[SearchResult]:
 
 
 def _dedupe_results(results: list[SearchResult]) -> list[SearchResult]:
-    seen: set[str] = set()
+    """候选池内部去重：UUID + 内容哈希（池内调用，不跨 query）。"""
+    seen_ids: set[str] = set()
+    seen_content: set[int] = set()
     deduped: list[SearchResult] = []
     for result in results:
-        identity = result.id or f"{result.document_id}:{hash(result.content)}"
-        if identity in seen:
+        content_key = hash(result.content)
+        row_id = result.id or ""
+        if (row_id and row_id in seen_ids) or content_key in seen_content:
             continue
-        seen.add(identity)
+        if row_id:
+            seen_ids.add(row_id)
+        seen_content.add(content_key)
         deduped.append(result)
     return deduped
 
 
-def _format_grouped_results(results: list[SearchResult]) -> list[str]:
+# ── 格式化输出 ────────────────────────────────────────────────────────────────
+
+def _format_grouped_results(
+    results: list[SearchResult],
+    compressed: dict[str, str],
+) -> list[str]:
     lines: list[str] = [f"找到 {len(results)} 个相关文档片段。"]
     if any(classify_knowledge_source(result).key == "excel_case" for result in results):
         lines.append("【来源说明】已命中 Excel 测试用例，功能结论应优先依据该分区。")
@@ -281,12 +464,16 @@ def _format_grouped_results(results: list[SearchResult]) -> list[str]:
             lines.extend(["", f"【知识库结果：{category.title}】"])
             current_key = category.key
 
-        lines.append(_format_result_item(item_index, result))
+        lines.append(_format_result_item(item_index, result, compressed))
         item_index += 1
     return lines
 
 
-def _format_result_item(index: int, result: SearchResult) -> str:
+def _format_result_item(
+    index: int,
+    result: SearchResult,
+    compressed: dict[str, str],
+) -> str:
     metadata = dict(result.metadata or {})
     source_path = str(metadata.get("source_path") or "").strip()
     source = str(metadata.get("source_name") or "").strip()
@@ -294,7 +481,9 @@ def _format_result_item(index: int, result: SearchResult) -> str:
         source = Path(source_path).name
     if not source:
         source = result.document_id
+    # 优先使用压缩内容（规则抽取相关字段）；压缩缺失时回退展示原始内容
+    display_content = compressed.get(result.id or "", result.content)
     return (
         f"[{index}] (来源: {source or 'unknown'}, 相关度: {result.score:.2f})\n"
-        f"{result.content}"
+        f"{display_content}"
     )

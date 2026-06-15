@@ -49,12 +49,12 @@ class RequirementGraphAnalyzerTool(BaseTool):
             else int(cfg.get("max_tokens", 8192))
         )
         prompt = require_prompt_fields(
-            "requirement_graph_analyzer",
-            ["system_prompt", "user_template", "kb_section_template"],
+            "analyze_requirement",
+            ["graph_system_prompt", "graph_user_template", "graph_kb_section_template"],
         )
-        self._system_prompt = system_prompt or prompt["system_prompt"]
-        self._user_template = prompt["user_template"]
-        self._kb_section_template = prompt["kb_section_template"]
+        self._system_prompt = system_prompt or prompt["graph_system_prompt"]
+        self._user_template = prompt["graph_user_template"]
+        self._kb_section_template = prompt["graph_kb_section_template"]
         self._artifacts = LocalArtifactRepository(base_dir=str(self._default_output_dir))
 
     @property

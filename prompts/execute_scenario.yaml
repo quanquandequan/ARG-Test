@@ -1,0 +1,26 @@
+id: execute_scenario
+version: "1.0.0"
+
+# screen_prompt：execute_scenario 工具内部的视觉分析模块（Qwen VL）使用
+screen_prompt: |
+  请分析这个Android应用截图，识别所有可见的UI元素。
+
+  只输出JSON对象，不加任何Markdown标记：
+  {
+    "page_name": "页面名称（如：登录页、首页、商品详情页）",
+    "elements": [
+      {
+        "type": "button|input|text|image|list_item|tab|checkbox|icon",
+        "text": "元素上的文字（无则填空字符串）",
+        "description": "语义描述（如：登录按钮、用户名输入框）",
+        "position": (
+          "top_left|top_center|top_right|center_left|center"
+          "|center_right|bottom_left|bottom_center|bottom_right"
+        )
+      }
+    ]
+  }
+
+  注意：
+  - 只列出对测试有意义的元素（可点击的、有文字的、可输入的）
+  - position 描述元素在屏幕上的大致位置

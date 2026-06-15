@@ -1,9 +1,11 @@
 """IngestionPipeline 编排 load → clean → chunk → embed → persist 流程。"""
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.core.exceptions import CollectionNotFoundError
 from src.core.logging import get_logger
 from src.embedding.base import BaseEmbedder
 from src.ingestion.chunker import ChineseChunker, Chunk
@@ -87,24 +89,37 @@ class IngestionPipeline:
             )
 
         doc, chunks = self.ingest(path)
+        resolved_source_path = source_path or str(path.resolve())
+
+        # 用文件绝对路径的 SHA-256 前 24 位作为稳定 document_id：
+        # 同一文件每次摄取得到相同 ID，配合下面的删旧逻辑实现幂等入库
+        stable_doc_id = hashlib.sha256(resolved_source_path.encode()).hexdigest()[:24]
+
         if not chunks:
             return PersistedIngestion(
                 document=doc,
                 chunks=[],
                 vectors=[],
-                source_path=source_path or str(path),
+                source_path=resolved_source_path,
             )
+
+        # 入库前删除同 document_id 的旧 chunks，防止重复入库
+        try:
+            deleted = self._vectordb.delete_by_document_id(stable_doc_id)
+            if deleted:
+                logger.info("document_old_chunks_deleted", doc_id=stable_doc_id, count=deleted)
+        except CollectionNotFoundError:
+            pass  # 首次入库，集合尚不存在，跳过删除
 
         vectors = self._embedder.embed_documents([chunk.content for chunk in chunks])
         rows = []
-        resolved_source_path = source_path or str(path)
         source = Path(resolved_source_path)
         document_metadata = dict(doc.metadata or {})
         for chunk, vec in zip(chunks, vectors):
             rows.append(
                 (
                     chunk.id,
-                    chunk.document_id,
+                    stable_doc_id,  # 使用稳定 ID 替代随机 uuid，保证幂等
                     chunk.content,
                     chunk.chunk_index,
                     vec,
@@ -123,7 +138,7 @@ class IngestionPipeline:
             )
 
         self._vectordb.insert(rows)
-        logger.info("document_persisted", doc_id=doc.id, chunk_count=len(chunks))
+        logger.info("document_persisted", doc_id=stable_doc_id, chunk_count=len(chunks))
         return PersistedIngestion(
             document=doc,
             chunks=chunks,

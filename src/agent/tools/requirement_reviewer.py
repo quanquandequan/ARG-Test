@@ -70,12 +70,12 @@ class RequirementReviewerTool(BaseTool):
             else int(cfg.get("max_tokens", 4096))
         )
         prompt = require_prompt_fields(
-            "requirement_reviewer",
-            ["system_prompt", "user_template_with_ir", "user_template_raw"],
+            "analyze_requirement",
+            ["reviewer_system_prompt", "reviewer_user_with_ir", "reviewer_user_raw"],
         )
-        self._system_prompt = system_prompt or prompt["system_prompt"]
-        self._user_template_with_ir = prompt["user_template_with_ir"]
-        self._user_template_raw = prompt["user_template_raw"]
+        self._system_prompt = system_prompt or prompt["reviewer_system_prompt"]
+        self._user_template_with_ir = prompt["reviewer_user_with_ir"]
+        self._user_template_raw = prompt["reviewer_user_raw"]
         self._artifacts = LocalArtifactRepository(base_dir=str(self._default_output_dir))
 
     @property

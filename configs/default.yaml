@@ -60,6 +60,11 @@ llm:
   temperature: 0.3
   max_tokens: 2048
 
+query_rewriter:
+  enabled: true          # false → 跳过 LLM 改写，直接用规则扩展（UI 别名）
+  timeout_seconds: 8     # LLM 调用超时（秒）；超时后回退到规则扩展
+  max_tokens: 256        # 改写结果最多 token 数（控制生成变体数量）
+
 artifacts:
   base_dir: "./outputs"
 

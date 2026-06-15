@@ -33,12 +33,12 @@ class RequirementIRBuilder:
             else int(cfg.get("max_tokens", 8192))
         )
         prompt = require_prompt_fields(
-            "requirement_ir_builder",
-            ["system_prompt", "user_template", "kb_section_template"],
+            "analyze_requirement",
+            ["ir_system_prompt", "ir_user_template", "ir_kb_section_template"],
         )
-        self._system_prompt = system_prompt or prompt["system_prompt"]
-        self._user_template = prompt["user_template"]
-        self._kb_section_template = prompt["kb_section_template"]
+        self._system_prompt = system_prompt or prompt["ir_system_prompt"]
+        self._user_template = prompt["ir_user_template"]
+        self._kb_section_template = prompt["ir_kb_section_template"]
 
     async def build(
         self,

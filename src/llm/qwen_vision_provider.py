@@ -56,7 +56,7 @@ class QwenVisionProvider:
             screen_prompt
             or cfg.get("screen_description_prompt", "")
             or require_prompt_fields(
-                "qwen_vision_screen",
+                "execute_scenario",
                 ["screen_prompt"],
             )["screen_prompt"]
         )
