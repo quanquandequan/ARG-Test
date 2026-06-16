@@ -306,7 +306,7 @@ rag --env production chat       # 使用 production 配置
 agent:
   max_iterations: 10
   max_history_tokens: 4000    # 历史滑窗 token 预算
-  system_prompt_id: agent     # 指向 prompts.agent.system_prompt
+  system_prompt_id: agent     # 指针，实际由 prompt_loader 读取独立文件 prompts/agent.yaml 的 system_prompt 字段
   tools:
     - search_knowledge
     - analyze_requirement
