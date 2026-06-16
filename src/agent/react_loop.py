@@ -69,6 +69,11 @@ _Event = _ToolCallEvent | _ToolResultEvent | _FinalAnswer | _ForcedAnswer
 # 每个 SSE token 分片的大致字符数。
 _TOKEN_CHUNK_SIZE = 20
 
+# 未调用工具却出现 [来源：片段N] 引用标注 —— 系统提示词明确禁止的伪造信号，
+# 命中即说明本轮模型大概率跳过了应有的 search_knowledge 调用（云端 LLM
+# 在 temperature=0 下仍非完全确定性，prompt 约束无法 100% 杜绝）。
+_FABRICATED_CITATION_PATTERN = re.compile(r"\[来源[:：]\s*片段\d+")
+
 
 class ReActAgent:
     """ReAct 模式 Agent：Think -> Act -> Observe -> Repeat -> Answer。"""
@@ -247,6 +252,27 @@ class ReActAgent:
                 tool_choice="auto" if use_tools else None,
                 temperature=temperature,
             )
+
+            if (
+                i == 0
+                and use_tools
+                and response.stop_reason != "tool_use"
+                and "search_knowledge" in self._registry.names()
+                and _FABRICATED_CITATION_PATTERN.search(response.content or "")
+            ):
+                # 检测到已知的伪造信号：没调用工具就编出了 [来源：片段N] 引用，
+                # 强制本轮重试一次 search_knowledge，而不是直接把幻觉答案放出去。
+                logger.warning(
+                    "agent_forced_retool",
+                    trace_id=trace_id,
+                    reason="citation_without_tool_call",
+                )
+                response = await self._llm.generate_chat(
+                    messages=messages,
+                    tools=tool_defs,
+                    tool_choice="search_knowledge",
+                    temperature=temperature,
+                )
 
             if response.stop_reason == "tool_use" and response.tool_calls:
                 # ── 工具调用轮次 ──

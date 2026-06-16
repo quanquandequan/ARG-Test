@@ -116,6 +116,47 @@ class TestMultiQueryCandidates(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 2)
 
 
+# ── _multi_query_rerank 模块多样性测试 ────────────────────────────────────────
+
+class TestMultiQueryRerank(unittest.IsolatedAsyncioTestCase):
+    async def test_round_robin_across_subqueries_avoids_starvation(self):
+        """单一模块候选行数多/打分高时，仍需保证其余模块进入最终结果。
+
+        复现场景：「搜索结果页都能搜索出什么内容」这类枚举型问题，子查询
+        覆盖 动画/漫画/帖子/用户 4 个模块；若按全局最高分排序，候选行数多的
+        模块（如动画有 5 条高分行）会挤占其余模块名额。轮询交叉排序后，
+        取前 4 个结果应当来自 4 个不同模块。
+        """
+        from src.agent.tools.search_kb import _multi_query_rerank
+
+        # 动画模块候选行数多且打分普遍很高，漫画/帖子/用户各只有 1 条但打分稍低
+        anim = [_make_search_result(f"动画内容{i}", f"anim-{i}", score=0.95 - i * 0.01) for i in range(5)]
+        manga = [_make_search_result("漫画内容", "manga-1", score=0.80)]
+        post = [_make_search_result("帖子内容", "post-1", score=0.78)]
+        user = [_make_search_result("用户内容", "user-1", score=0.76)]
+        candidates = anim + manga + post + user
+
+        async def fake_rerank(query, candidates, top_k):
+            # 模拟各子查询对应模块的候选打分最高，其余候选打分很低
+            target = {
+                "搜索结果页 动画": anim,
+                "搜索结果页 漫画": manga,
+                "搜索结果页 帖子": post,
+                "搜索结果页 用户": user,
+            }[query]
+            others = [c for c in candidates if c not in target]
+            return target + others
+
+        engine = MagicMock()
+        engine.rerank_candidates = AsyncMock(side_effect=fake_rerank)
+
+        queries = ["搜索结果页 动画", "搜索结果页 漫画", "搜索结果页 帖子", "搜索结果页 用户"]
+        results = await _multi_query_rerank(engine, queries, candidates)
+
+        top4_ids = {r.id for r in results[:4]}
+        self.assertEqual(top4_ids, {"anim-0", "manga-1", "post-1", "user-1"})
+
+
 # ── _stable_dedup 测试 ────────────────────────────────────────────────────────
 
 class TestStableDedup(unittest.TestCase):

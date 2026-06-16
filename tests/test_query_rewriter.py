@@ -106,6 +106,28 @@ class TestQueryRewriter(unittest.IsolatedAsyncioTestCase):
         variants = await rewriter.rewrite("错误测试", max_variants=5)
         self.assertEqual(variants, ["错误测试"])
 
+    async def test_transient_error_retried_then_succeeds(self):
+        """首次报错/超时为偶发故障，重试一次后成功则使用 LLM 变体，而非直接回退。"""
+        from src.retriever.query_rewriter import QueryRewriter
+
+        llm = MagicMock()
+        llm.generate_chat = AsyncMock(
+            side_effect=[
+                Exception("网络抖动"),
+                ChatResponse(content="搜索结果页 动画\n搜索结果页 漫画", model="mock"),
+            ]
+        )
+
+        with patch(
+            "src.retriever.query_rewriter.require_prompt_fields",
+            return_value={"query_rewriter_prompt": "test {max_variants}"},
+        ):
+            rewriter = QueryRewriter(llm)
+
+        variants = await rewriter.rewrite("搜索结果页", max_variants=4)
+        self.assertIn("搜索结果页 动画", variants)
+        self.assertEqual(llm.generate_chat.call_count, 2)
+
     async def test_empty_llm_response_returns_original(self):
         """LLM 返回空字符串时，只返回原始 query。"""
         rewriter = _make_rewriter("   \n\n  ")

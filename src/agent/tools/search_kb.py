@@ -111,7 +111,7 @@ class KnowledgeBaseTool(BaseTool):
                 },
                 "top_k": {
                     "type": "integer",
-                    "description": "返回的文档片段数量，默认为 5",
+                    "description": "返回的文档片段数量，默认为 8",
                 },
                 "filters": {
                     "type": "object",
@@ -124,7 +124,7 @@ class KnowledgeBaseTool(BaseTool):
     async def execute(
         self,
         query: str = "",
-        top_k: int = 5,
+        top_k: int = 8,
         filters: dict | None = None,
         debug_queries: bool = False,
         **kwargs,
@@ -140,7 +140,7 @@ class KnowledgeBaseTool(BaseTool):
     async def search_typed(
         self,
         query: str = "",
-        top_k: int = 5,
+        top_k: int = 8,
         filters: dict | None = None,
         expand_query: bool = True,
         max_query_variants: int = 5,
@@ -153,31 +153,39 @@ class KnowledgeBaseTool(BaseTool):
         """
         per_query_k = max(_PER_QUERY_CANDIDATE_K, top_k * 8)
 
-        # 生成 query variants：优先用 LLM 改写，回退到规则扩展（UI 别名）
+        # 生成 query variants + sub_queries：
+        #   variants    = 原始 query + LLM/规则子查询，用于向量搜索（保证召回）
+        #   sub_queries = 仅 LLM 子查询（去掉原始），用于 Rerank（过滤跨 App 噪声）
+        sub_queries: list[str] = []
         if expand_query and max_query_variants > 1:
             if self._query_rewriter is not None:
                 variants = await self._query_rewriter.rewrite(
                     query, max_variants=max_query_variants
                 )
-                # LLM 超时/失败时 variants == [query]，叠加规则扩展补充召回面
                 if len(variants) <= 1:
+                    # LLM 超时/失败 → 规则扩展兜底
                     variants = _expand_query(query, max_variants=max_query_variants)
+                else:
+                    # LLM 成功：子查询不含原始 query，用于 Rerank 时去掉干扰词
+                    sub_queries = variants[1:]
             else:
                 variants = _expand_query(query, max_variants=max_query_variants)
         else:
             variants = [query]
 
-        # 1. 并发召回所有 variants 的候选（全量，无来源过滤）
+        # 1. 并发召回所有 variants 的候选（含原始 query，保证广召回）
         raw_candidates = await _multi_query_candidates(
             self._retrieval_engine, variants, per_query_k, filters
         )
-        # 2. Excel 专项召回：Bug 列表数量庞大，全量搜索时常把测试用例挤出 top-k；
-        #    用 source_format 过滤做额外一次向量搜索，强制把 Excel 候选纳入池中。
+        # 2. Excel 专项召回：
+        #    优先用第一个 LLM 子查询（聚焦，不含 App 名称），避免原始 query 引入跨 App 噪声；
+        #    若无子查询（LLM 未激活），回退到原始 query
         excel_filter = dict(_EXCEL_SOURCE_FILTER)
         if filters:
             excel_filter.update(filters)
+        excel_boost_query = sub_queries[0] if sub_queries else query
         excel_boost = await self._retrieval_engine.retrieve_candidates(
-            query=query,  # 用原始 query 做 Excel 专项召回，避免扩展词引入噪声
+            query=excel_boost_query,
             top_k=_EXCEL_BOOST_K,
             filters=excel_filter,
         )
@@ -196,12 +204,18 @@ class KnowledgeBaseTool(BaseTool):
             )
 
         rerank_pool = _build_source_aware_rerank_pool(candidates, top_k)
-        # rerank 始终用原始 query，不受扩展词影响
-        results = await self._retrieval_engine.rerank_candidates(
-            query=query,
-            candidates=rerank_pool,
-            top_k=len(rerank_pool),
-        )
+        # 子查询多路 rerank：对每个子查询独立打分，各候选取最高分；
+        # 子查询不含原始 query 中的 App 名称等干扰词，能更准确地把跨 App 用例排在后面
+        if sub_queries:
+            results = await _multi_query_rerank(
+                self._retrieval_engine, sub_queries, rerank_pool
+            )
+        else:
+            results = await self._retrieval_engine.rerank_candidates(
+                query=query,
+                candidates=rerank_pool,
+                top_k=len(rerank_pool),
+            )
         results = _select_source_aware_results(results, top_k)
         if not results:
             return KnowledgeSearchResult(
@@ -216,7 +230,9 @@ class KnowledgeBaseTool(BaseTool):
 
         if debug_queries:
             lines = [
-                _build_debug_header(query, variants, raw_count, dedup_count, len(rerank_pool))
+                _build_debug_header(
+                    query, variants, sub_queries, raw_count, dedup_count, len(rerank_pool)
+                )
             ] + lines
 
         return KnowledgeSearchResult(
@@ -244,6 +260,63 @@ async def _multi_query_candidates(
     for batch in batches:
         merged.extend(batch)
     return merged
+
+
+async def _multi_query_rerank(
+    engine: RetrievalEngine,
+    queries: list[str],
+    candidates: list[SearchResult],
+) -> list[SearchResult]:
+    """多子查询 rerank：对每个子查询独立打分，按子查询轮询交叉排序。
+
+    解决原始长 query 会把跨 App 用例排在正确 Sheet 内容前面的问题：
+    每个短子查询更聚焦，能更准确地识别对应 Sheet 内容的相关度。
+
+    子查询往往对应不同内容模块（如"动画/漫画/帖子"）。若直接按全局最高分
+    排序，候选行数多或打分普遍偏高的模块会挤占其余模块的展示名额，
+    导致"页面有哪些内容"类枚举问题只能看到 1-2 个模块。因此按子查询轮询
+    交叉取候选（每轮各子查询贡献一个未出现过的候选），保证不同模块都有
+    机会进入最终 top_k，而不仅是分数最高的单一模块。
+    """
+    if not candidates or not queries:
+        return candidates
+
+    tasks = [
+        engine.rerank_candidates(query=q, candidates=candidates, top_k=len(candidates))
+        for q in queries
+    ]
+    all_ranked: list[list[SearchResult]] = await asyncio.gather(*tasks)
+
+    # 每个 candidate 取所有子查询打分中的最高分，用于展示「相关度」
+    score_map: dict[str, float] = {}
+    best_result: dict[str, SearchResult] = {}
+    for ranked_list in all_ranked:
+        for result in ranked_list:
+            key = result.id or str(hash(result.content))
+            score = float(result.score or 0.0)
+            if score > score_map.get(key, 0.0):
+                score_map[key] = score
+                best_result[key] = result
+
+    # 按子查询轮询交叉排序，保证模块多样性；同一轮内部仍按最高分排序
+    seen: set[str] = set()
+    interleaved: list[SearchResult] = []
+    max_len = max((len(lst) for lst in all_ranked), default=0)
+    for i in range(max_len):
+        round_keys: list[str] = []
+        for ranked_list in all_ranked:
+            if i >= len(ranked_list):
+                continue
+            result = ranked_list[i]
+            key = result.id or str(hash(result.content))
+            if key in seen:
+                continue
+            seen.add(key)
+            round_keys.append(key)
+        round_keys.sort(key=lambda k: score_map.get(k, 0.0), reverse=True)
+        interleaved.extend(best_result[k] for k in round_keys)
+
+    return interleaved
 
 
 # ── 稳定去重（多 query 合并用） ───────────────────────────────────────────────
@@ -304,17 +377,24 @@ def _build_stable_key(result: SearchResult, meta: dict) -> str:
 def _build_debug_header(
     original_query: str,
     variants: list[str],
+    sub_queries: list[str],
     raw_count: int,
     dedup_count: int,
     pool_size: int,
 ) -> str:
     lines = ["【检索调试】", f"原始 query: {original_query}"]
     if len(variants) > 1:
-        lines.append("扩展 query:")
+        lines.append("向量搜索 query（全部 variants）:")
         for i, v in enumerate(variants, 1):
             lines.append(f"  {i}. {v}")
     else:
         lines.append("（未启用 query 扩展）")
+    if sub_queries:
+        lines.append("Rerank query（LLM 子查询，去原始）:")
+        for i, v in enumerate(sub_queries, 1):
+            lines.append(f"  {i}. {v}")
+    else:
+        lines.append("Rerank query: 原始 query（无 LLM 子查询）")
     lines.append(f"候选统计: raw={raw_count}, dedup={dedup_count}, rerank_pool={pool_size}")
     return "\n".join(lines)
 

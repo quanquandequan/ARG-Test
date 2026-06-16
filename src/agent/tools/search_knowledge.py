@@ -65,7 +65,7 @@ class SearchKnowledgeTool(BaseTool):
                 },
                 "top_k": {
                     "type": "integer",
-                    "description": "知识库返回片段数量，默认 5",
+                    "description": "知识库返回片段数量，默认 8",
                 },
                 "filters": {
                     "type": "object",
@@ -83,7 +83,7 @@ class SearchKnowledgeTool(BaseTool):
         self,
         query: str = "",
         need_fresh_info: bool = False,
-        top_k: int = 5,
+        top_k: int = 8,
         filters: dict | None = None,
         num_web_results: int = 5,
         debug_queries: bool = False,

@@ -33,6 +33,10 @@ _format_answer = format_answer
 _parse_sse_event = parse_sse_event
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# 答案合成是事实抽取/引用任务而非创意生成，用 0.0 保证确定性，
+# 避免全局 llm.temperature(0.3) 带来的偶发幻觉（参考 query_rewriter 的同类取舍）
+_CHAT_TEMPERATURE = 0.0
 # 确保 `python -m src.agent.cli` 和 `pip install -e` 时项目根目录都在 sys.path 中
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -76,7 +80,9 @@ async def _run_chat(args):
         if args.stream:
             print("Agent: ", end="", flush=True)
             last_answer = ""
-            async for event in agent.run_stream(query=query, history=history):
+            async for event in agent.run_stream(
+                query=query, history=history, temperature=_CHAT_TEMPERATURE
+            ):
                 event_type, data = parse_sse_event(event)
                 if event_type == "token" and isinstance(data, dict):
                     tok = data.get("text", "")
@@ -89,7 +95,9 @@ async def _run_chat(args):
                     print(f"\n   [TOOL] {tools}", file=sys.stderr, flush=True)
             print()
         else:
-            result = await agent.run(query=query, history=history)
+            result = await agent.run(
+                query=query, history=history, temperature=_CHAT_TEMPERATURE
+            )
             last_answer = result.answer
             if args.debug and result.steps:
                 for s in result.steps:

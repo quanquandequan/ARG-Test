@@ -35,21 +35,30 @@ class QueryRewriter:
         """返回 query 变体列表，第一项始终为原始 query。
 
         LLM 生成 max_variants-1 个变体，再加上原始 query 共 max_variants 项。
-        超时或报错时静默返回 [query]，由调用方决定是否叠加规则扩展。
+        规则兜底（_expand_query）对"枚举类型/列举有多少种"问题没有领域分解能力，
+        会显著拉低召回质量，因此偶发超时/报错时重试一次，仍失败才静默回退 [query]。
         """
         query = query.strip()
         if not query or max_variants <= 1:
             return [query]
-        try:
-            llm_variants = await asyncio.wait_for(
-                self._call_llm(query, max_variants - 1),
-                timeout=self._timeout,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("query_rewriter_timeout", query=query, timeout=self._timeout)
-            return [query]
-        except Exception as exc:
-            logger.warning("query_rewriter_error", query=query, error=str(exc))
+
+        llm_variants: list[str] | None = None
+        for attempt in range(2):
+            try:
+                llm_variants = await asyncio.wait_for(
+                    self._call_llm(query, max_variants - 1),
+                    timeout=self._timeout,
+                )
+                break
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "query_rewriter_timeout", query=query, timeout=self._timeout, attempt=attempt
+                )
+            except Exception as exc:
+                logger.warning(
+                    "query_rewriter_error", query=query, error=str(exc), attempt=attempt
+                )
+        if llm_variants is None:
             return [query]
 
         # 原始 query 始终排第一，LLM 变体去重后依次追加
