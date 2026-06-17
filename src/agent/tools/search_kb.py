@@ -71,6 +71,60 @@ _EXCEL_BOOST_EXPR = (
 )
 _EXCEL_SOURCE_FILTER: dict = {"_raw": _EXCEL_BOOST_EXPR}
 
+# Bug boost：普通多 query 召回路径上，bug 记录每条内容仅一行摘要，
+# 向量相似度天然低于多字段的测试用例行（实测最高分约 0.26，低于 0.3 阈值），
+# 导致 bug 查询时 bug 行被测试用例行完全挤出。
+# 与 Excel boost 对称，额外做一次只搜 bug 记录的专属向量召回，
+# 并在候选池和最终选择阶段给 bug 记录优先名额。
+_BUG_BOOST_K = 80
+_BUG_BOOST_EXPR = 'content like "%Bug Key:%"'
+_BUG_SOURCE_FILTER: dict = {"_raw": _BUG_BOOST_EXPR}
+# 用户 query 里含这些词时视为 bug 查询，激活 bug boost 路径
+_BUG_TRIGGER_WORDS = frozenset(["bug", "缺陷", "严重", "异常", "崩溃", "闪退", "故障"])
+
+# XMind boost：XMind 文件是功能规格/需求文档，数量少（每文件 2-43 chunk），
+# 普通召回中被 Excel 测试用例行（3000+）完全挤出 top-k，功能类查询返回空。
+# 对"功能/需求/特性"类查询，额外做一次只搜 xmind 的专属向量召回，
+# 并在候选池和最终选择阶段给 XMind 记录优先名额。
+_XMIND_BOOST_K = 60
+_XMIND_BOOST_EXPR = 'metadata["source_format"] == "xmind"'
+_XMIND_SOURCE_FILTER: dict = {"_raw": _XMIND_BOOST_EXPR}
+# 用户 query 里含这些词时视为功能/需求查询，激活 xmind boost 路径
+_XMIND_TRIGGER_WORDS = frozenset(["功能", "特性", "需求"])
+
+# 对比类查询：需要同时从 XMind（规格）和 Excel（测试用例）各取一部分，不能独占全部槽位
+_COMPARISON_TRIGGER_WORDS = frozenset(["差异", "区别", "对比", "不同", "比较", "相比", "vs"])
+
+
+def _is_bug_query(query: str) -> bool:
+    """判断是否为 bug 相关查询。"""
+    q = query.lower()
+    return any(w in q for w in _BUG_TRIGGER_WORDS)
+
+
+def _is_xmind_query(query: str) -> bool:
+    """判断是否为功能/需求类查询（应优先返回 XMind 规格文档）。"""
+    return any(w in query for w in _XMIND_TRIGGER_WORDS)
+
+
+def _is_comparison_query(query: str) -> bool:
+    """判断是否为对比类查询（需要 XMind + Excel 混合结果，不能独占槽位）。"""
+    return any(w in query for w in _COMPARISON_TRIGGER_WORDS)
+
+
+def _strip_bug_noise(query: str) -> str:
+    """去掉 query 里的 bug 类噪声词，保留功能/模块词用于 bug boost 向量搜索。
+
+    bug 记录本身已通过 filter 锁定，boost query 里不需要"bug/缺陷/严重"这类词，
+    去掉后向量更贴近 bug 摘要里描述的具体症状，相似度会显著提升。
+    """
+    noise_words = ["bug", "缺陷", "严重", "异常", "崩溃", "闪退", "故障",
+                   "都有什么", "有哪些", "有什么", "哪些"]
+    result = query
+    for w in noise_words:
+        result = result.replace(w, "")
+    return result.strip() or query
+
 
 class KnowledgeBaseTool(BaseTool):
     """在企业知识库中搜索相关文档。
@@ -82,7 +136,7 @@ class KnowledgeBaseTool(BaseTool):
     def __init__(
         self,
         retrieval_engine: RetrievalEngine,
-        query_rewriter: "QueryRewriter | None" = None,
+        query_rewriter: QueryRewriter | None = None,
     ):
         self._retrieval_engine = retrieval_engine
         # LLM 改写器：有则用 LLM 扩展，无则回退规则扩展（UI 别名）
@@ -177,19 +231,51 @@ class KnowledgeBaseTool(BaseTool):
         raw_candidates = await _multi_query_candidates(
             self._retrieval_engine, variants, per_query_k, filters
         )
-        # 2. Excel 专项召回：
-        #    优先用第一个 LLM 子查询（聚焦，不含 App 名称），避免原始 query 引入跨 App 噪声；
-        #    若无子查询（LLM 未激活），回退到原始 query
+        # 2. 专项 boost 召回（Excel + 按需 Bug），两路并发执行：
+        #    · Excel boost：LLM 子查询聚焦，不含 App 名，过滤掉 bug 行，
+        #      防止 bug 列表把测试用例挤出候选池。
+        #    · Bug boost：仅在 bug 查询时激活；去掉 query 中的 bug 类噪声词后
+        #      向量搜索，使 query 更贴近 bug 摘要里的具体症状描述。
+        bug_query_mode = _is_bug_query(query)
+        xmind_query_mode = _is_xmind_query(query)
+        comparison_mode = _is_comparison_query(query)
+        focus_query = sub_queries[0] if sub_queries else query
+
         excel_filter = dict(_EXCEL_SOURCE_FILTER)
         if filters:
             excel_filter.update(filters)
-        excel_boost_query = sub_queries[0] if sub_queries else query
-        excel_boost = await self._retrieval_engine.retrieve_candidates(
-            query=excel_boost_query,
-            top_k=_EXCEL_BOOST_K,
-            filters=excel_filter,
-        )
-        raw_candidates = raw_candidates + excel_boost
+        boost_coros = [
+            self._retrieval_engine.retrieve_candidates(
+                query=focus_query,
+                top_k=_EXCEL_BOOST_K,
+                filters=excel_filter,
+            )
+        ]
+        if bug_query_mode:
+            bug_filter = dict(_BUG_SOURCE_FILTER)
+            if filters:
+                bug_filter.update(filters)
+            bug_boost_query = _strip_bug_noise(focus_query)
+            boost_coros.append(
+                self._retrieval_engine.retrieve_candidates(
+                    query=bug_boost_query,
+                    top_k=_BUG_BOOST_K,
+                    filters=bug_filter,
+                )
+            )
+        if xmind_query_mode:
+            xmind_filter = dict(_XMIND_SOURCE_FILTER)
+            if filters:
+                xmind_filter.update(filters)
+            boost_coros.append(
+                self._retrieval_engine.retrieve_candidates(
+                    query=focus_query,
+                    top_k=_XMIND_BOOST_K,
+                    filters=xmind_filter,
+                )
+            )
+        for boost in await asyncio.gather(*boost_coros):
+            raw_candidates = raw_candidates + boost
 
         raw_count = len(raw_candidates)
         candidates = _stable_dedup(raw_candidates)
@@ -203,7 +289,13 @@ class KnowledgeBaseTool(BaseTool):
                 results=[],
             )
 
-        rerank_pool = _build_source_aware_rerank_pool(candidates, top_k)
+        rerank_pool = _build_source_aware_rerank_pool(
+            candidates,
+            top_k,
+            bug_query_mode,
+            xmind_query_mode,
+            comparison_mode,
+        )
         # 子查询多路 rerank：对每个子查询独立打分，各候选取最高分；
         # 子查询不含原始 query 中的 App 名称等干扰词，能更准确地把跨 App 用例排在后面
         if sub_queries:
@@ -216,7 +308,13 @@ class KnowledgeBaseTool(BaseTool):
                 candidates=rerank_pool,
                 top_k=len(rerank_pool),
             )
-        results = _select_source_aware_results(results, top_k)
+        results = _select_source_aware_results(
+            results,
+            top_k,
+            bug_query_mode,
+            xmind_query_mode,
+            comparison_mode,
+        )
         if not results:
             return KnowledgeSearchResult(
                 content="未找到相关文档。",
@@ -452,17 +550,39 @@ def _sort_by_source_priority(results: list[SearchResult]) -> list[SearchResult]:
 def _build_source_aware_rerank_pool(
     candidates: list[SearchResult],
     top_k: int,
+    bug_query_mode: bool = False,
+    xmind_query_mode: bool = False,
+    comparison_mode: bool = False,
 ) -> list[SearchResult]:
-    """构造来源感知候选池，确保 Excel 候选不会在 rerank 前丢失。"""
+    """构造来源感知候选池，确保主力来源候选不会在 rerank 前丢失。
+
+    bug_query_mode=True 时 bug 记录全量保留；
+    xmind_query_mode=True 时 XMind 记录全量保留（与 bug 模式对称）；
+    comparison_mode=True 时 XMind 和 Excel 各全量保留（对比查询需要双来源）；
+    普通模式下 Excel 全量保留。
+    """
     excel = _by_category(candidates, "excel_case")
     bug = _by_category(candidates, "bug")
     xmind = _by_category(candidates, "xmind")
     other = _by_category(candidates, "other")
 
     pool: list[SearchResult] = []
-    pool.extend(excel)
-    pool.extend(bug[: max(top_k, 10)])
-    pool.extend(xmind[: max(top_k, 10)])
+    if bug_query_mode:
+        pool.extend(bug)                      # bug 查询：bug 记录全量保留
+        pool.extend(excel[: max(top_k, 10)])
+        pool.extend(xmind[: max(top_k, 10)])
+    elif xmind_query_mode and comparison_mode:
+        pool.extend(xmind)                    # 对比查询：XMind 和 Excel 都全量保留
+        pool.extend(excel)
+        pool.extend(bug[: max(top_k, 10)])
+    elif xmind_query_mode:
+        pool.extend(xmind)                    # 纯功能查询：XMind 全量保留
+        pool.extend(excel[: max(top_k, 10)])
+        pool.extend(bug[: max(top_k, 10)])
+    else:
+        pool.extend(excel)                    # 普通查询：Excel 全量保留
+        pool.extend(bug[: max(top_k, 10)])
+        pool.extend(xmind[: max(top_k, 10)])
     pool.extend(other[: max(top_k, 10)])
     return _dedupe_results(pool)
 
@@ -470,18 +590,44 @@ def _build_source_aware_rerank_pool(
 def _select_source_aware_results(
     ranked: list[SearchResult],
     top_k: int,
+    bug_query_mode: bool = False,
+    xmind_query_mode: bool = False,
+    comparison_mode: bool = False,
 ) -> list[SearchResult]:
-    """从 rerank 结果中选择最终展示项，保留 Excel 并限制辅助来源数量。"""
+    """从 rerank 结果中选择最终展示项。
+
+    bug_query_mode=True  → bug 记录优先占槽，剩余给 Excel。
+    xmind_query_mode=True AND comparison_mode=True
+                         → XMind / Excel 各占一半槽位（对比查询双来源）。
+    xmind_query_mode=True → XMind 优先占槽，剩余给 Excel。
+    普通模式           → Excel 优先，剩余给 bug/xmind。
+    """
     excel = _by_category(ranked, "excel_case")
     bug = _by_category(ranked, "bug")
     xmind = _by_category(ranked, "xmind")
     other = _by_category(ranked, "other")
 
     selected: list[SearchResult] = []
-    selected.extend(excel[: max(top_k, 5)])
-    remaining = max(top_k - len(selected), 0)
-    if remaining:
-        selected.extend(bug[:remaining])
+    if bug_query_mode:
+        selected.extend(bug[: max(top_k, 5)])
+        remaining = max(top_k - len(selected), 0)
+        if remaining:
+            selected.extend(excel[:remaining])
+    elif xmind_query_mode and comparison_mode:
+        # 对比查询：XMind 和 Excel 各占一半，保证双来源都有代表
+        half = max(top_k // 2, 2)
+        selected.extend(xmind[:half])
+        selected.extend(excel[:half])
+    elif xmind_query_mode:
+        selected.extend(xmind[: max(top_k, 5)])
+        remaining = max(top_k - len(selected), 0)
+        if remaining:
+            selected.extend(excel[:remaining])
+    else:
+        selected.extend(excel[: max(top_k, 5)])
+        remaining = max(top_k - len(selected), 0)
+        if remaining:
+            selected.extend(bug[:remaining])
     remaining = max(top_k - len(selected), 0)
     if remaining:
         selected.extend(xmind[:remaining])
