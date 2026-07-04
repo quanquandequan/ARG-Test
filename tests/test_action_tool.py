@@ -111,6 +111,46 @@ class TestNudgeIntoView(unittest.IsolatedAsyncioTestCase):
         mgr.swipe.assert_not_awaited()
         mgr.tap.assert_awaited_once_with(*button.center)
 
+    async def test_nudge_default_matches_settle_module_at_four_attempts(self):
+        # 回归场景：_nudge_into_view 和 _settle_module 承担同一类"清除底部
+        # 悬浮层遮挡"职责，AGENTS.md 记录的"多层卡片实测 2 次不够、调到 4"
+        # 这条结论必须对两者同时生效，不能只改了 _settle_module 却漏了
+        # _nudge_into_view（曾经出现过这个不一致）。构造一个需要恰好 4 次
+        # 微调才能清出遮挡区的场景：前 3 次微调后按钮仍被判定为遮挡，第 4 次
+        # 微调后的画面才真正清出遮挡区；若 max_nudges 退回 3，函数会在第 3
+        # 次微调仍处于遮挡状态时就耗尽重试次数返回，最终点击坐标会落在错误
+        # （仍被遮挡）的位置，而不是第 4 次清出遮挡区后的正确坐标。
+        bottom_bar = _el("", [0, 1546, 1080, 1792])
+        title = _el("每日更新", [36, 1278, 228, 1335])
+        # y2 依次为 1650/1620/1590/1560（均 > 1546，仍遮挡）/1530（<= 1546，清出）。
+        y2_by_attempt = [1650, 1620, 1590, 1560, 1530]
+        screens = [
+            ParsedScreen(
+                elements=[
+                    bottom_bar,
+                    title,
+                    _el("加追", [400, y2 - 50, 600, y2], clickable=True),
+                ]
+            )
+            for y2 in y2_by_attempt
+        ]
+        final_button = screens[-1].elements[-1]
+
+        mgr = MagicMock()
+        mgr._driver = None
+        mgr.get_parsed_screen = AsyncMock(side_effect=screens)
+        mgr.swipe = AsyncMock()
+        mgr.tap = AsyncMock()
+        tool = _make_tool(mgr)
+
+        result = await tool.execute(action="tap", target="加追", target_type="text")
+
+        # 必须恰好用满 4 次微调（初始 1 次查找 + 4 次 nudge 循环内的重新查找）
+        # 才能拿到最终清出遮挡区后的正确坐标；max_nudges=3 会在此提前退出。
+        self.assertIn("已点击坐标", result)
+        mgr.tap.assert_awaited_once_with(*final_button.center)
+        self.assertEqual(mgr.swipe.await_count, 4)
+
 
 class TestScrollUntilConditionSettles(unittest.IsolatedAsyncioTestCase):
     async def test_scroll_continues_nudging_until_module_fully_clear(self):
