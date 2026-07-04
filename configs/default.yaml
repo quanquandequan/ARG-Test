@@ -15,8 +15,6 @@ embedding:
   device: "cpu"
   normalize: true
   batch_size: 10          # DashScope 每次请求限制为 10 条
-  use_onnx: false
-  onnx_model_path: null
 
 chunking:
   strategy: "chinese_aware"
@@ -106,17 +104,6 @@ test_generator:
   output_dir: "./outputs/test_cases"
   temperature: 0.3
   max_tokens: 16384
-  # Excel 列定义（顺序即输出列顺序，可自定义列名和宽度）
-  columns:
-    - {name: "用例编号", width: 12}
-    - {name: "所属模块", width: 14}
-    - {name: "用例标题", width: 30}
-    - {name: "前置条件", width: 20}
-    - {name: "测试步骤", width: 40}
-    - {name: "预期结果", width: 30}
-    - {name: "优先级", width: 8}
-    - {name: "用例类型", width: 10}
-    - {name: "备注", width: 16}
 
 # ── Mobile UI Automation（Phase 3）──────────────────────────────────────────
 # 请先安装可选依赖：pip install -e ".[mobile]"
@@ -152,12 +139,6 @@ qwen_vision:
   model: "qwen3.7-plus"        # 用于屏幕分析的 Qwen3.7 VL
   api_key: null                # null → 从环境变量读取 DASHSCOPE_API_KEY
   max_tokens: 1024
-
-api:
-  host: "0.0.0.0"
-  port: 8000
-  cors_origins: ["*"]
-  request_timeout: 60
 
 logging:
   json_format: true

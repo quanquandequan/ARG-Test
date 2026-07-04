@@ -20,7 +20,7 @@ from src.domain.test_design.generation import (
 )
 from src.domain.test_design.test_point import TestPoint
 from src.domain.test_design.test_scenario import TestScenario
-from src.services.case_generator import CaseGeneratorNode
+from src.services.case_generator import CaseGeneratorNode, _is_exception_case_type
 from src.services.exporters import ExcelExporter, JsonExporter, MarkdownExporter
 from src.services.exporters.common import normalise_generation_mode
 from src.services.workflow_base import WorkflowContext
@@ -96,12 +96,23 @@ class TestCaseGenerationWorkflow:
         )
         generation_mode = normalise_generation_mode(request.generation_mode)
         requirement_text = _render_analysis_graph_for_generation(graph)
+        # kb_samples 用于让生成器参考知识库现有用例的描述风格/粒度/术语；
+        # design_test_cases 工具目前不会预先填充 request.kb_samples，这里兜底现查，
+        # 避免生成结果和知识库既有用例的写作习惯脱节。
+        kb_samples = request.kb_samples or await self.build_kb_samples(module, requirement_text)
+        # regression_scope 由 analyze_requirement 的知识库增量分析产出，标识本次
+        # 需求（通常是给已有页面新增功能）会影响哪些既有页面/模块；这里对每一项
+        # 现查知识库现状，供生成器补充"新功能影响面"的回归验证用例。
+        regression_context = await self.build_regression_context(
+            module, graph.get("regression_scope", [])
+        )
         context = WorkflowContext(
             request=request,
             requirement_text=requirement_text,
             module=module,
             generation_mode=generation_mode,
-            kb_samples=request.kb_samples,
+            kb_samples=kb_samples,
+            regression_context=regression_context,
             requirement_ir=_requirement_ir_from_analysis_graph(graph, module),
         )
         context.test_points = self._build_test_points_from_graph(
@@ -112,11 +123,63 @@ class TestCaseGenerationWorkflow:
         context.artifact = self._build_artifact(context)
         return TestCaseGenerationData(
             module=module,
-            kb_samples=request.kb_samples,
+            kb_samples=kb_samples,
             generation_mode=generation_mode,
             cases=context.test_cases,
             artifact=context.artifact,
         )
+
+    async def build_regression_context(
+        self,
+        module: str,
+        regression_scope: list,
+    ) -> str:
+        """按 regression_scope 逐项查询知识库现状，供生成器补充影响面回归用例。
+
+        regression_scope 本身只是一句话描述（如"动画频道推荐页现有楼层滑动逻辑"），
+        不含具体验证点；这里对每一项做一次 Excel 优先的检索，把命中的现状测试
+        用例原文一并提供给生成器，避免生成器只凭一句话描述编造回归用例。
+        """
+        scopes = [str(item).strip() for item in (regression_scope or []) if str(item).strip()]
+        if not scopes:
+            return ""
+
+        sections: list[str] = []
+        for idx, scope in enumerate(scopes[:5], start=1):
+            query = f"{module} {scope}"
+            try:
+                candidates = await self._retrieval_engine.retrieve_candidates(
+                    query=query, top_k=40,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "test_case_regression_context_unavailable",
+                    module=module,
+                    scope=scope,
+                    error=str(exc),
+                )
+                continue
+            excel_candidates = [r for r in candidates if _is_excel_case_sample(r)]
+            rerank_pool = excel_candidates or candidates
+            try:
+                results = await self._retrieval_engine.rerank_candidates(
+                    query=query, candidates=rerank_pool, top_k=3,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "test_case_regression_context_rerank_unavailable",
+                    module=module,
+                    scope=scope,
+                    error=str(exc),
+                )
+                results = rerank_pool[:3]
+            results = _select_sample_results(results, final_k=2)
+            if not results:
+                continue
+            snippet = "\n".join(f"  - {result.content.strip()[:300]}" for result in results)
+            sections.append(f"[{idx}] 受影响范围：{scope}\n现有逻辑参考：\n{snippet}")
+
+        return "\n\n".join(sections)
 
     def load_requirement_text(self, filename: str, content: bytes) -> str:
         suffix = Path(filename or "upload").suffix
@@ -347,13 +410,16 @@ def render_generation_summary(
     workbook: ArtifactRecord | None = None,
     automation_json: ArtifactRecord | None = None,
 ) -> str:
-    # 兼容多种 case_type 命名：如“正向”“功能”“功能测试”等都视为正向/主流程类。
-    def _is_positive(case_type: str) -> bool:
-        text = str(case_type or "").strip()
-        return ("正向" in text) or ("功能" in text)
-
-    positive = sum(1 for case in generation.cases if _is_positive(case.case_type))
-    negative = len(generation.cases) - positive
+    # 直接复用 case_generator._is_exception_case_type，保证这里的统计口径
+    # 和 automation 模式代码层过滤异常用例的判断完全一致。
+    # 新方法论下 case_type 取值为：交互测试(P1)/功能测试(P2)/UI测试(P3)/
+    # 异常测试(P3)/回归测试，不再有"正向"这个历史命名，旧的
+    # "正向" in text or "功能" in text 判断已经和新分类体系脱节，
+    # 会把交互测试/UI测试/回归测试都误判为"反向/边界/异常"。
+    exception_count = sum(
+        1 for case in generation.cases if _is_exception_case_type(case.case_type)
+    )
+    core_count = len(generation.cases) - exception_count
     lines = []
     if generation.generation_mode == "automation":
         lines.append("已生成自动化用例定义 JSON：")
@@ -367,7 +433,8 @@ def render_generation_summary(
         f"模块：{generation.module}",
         f"生成模式：{generation.generation_mode}",
         f"用例数量：{len(generation.cases)} 条",
-        f"（覆盖正向 {positive} 条，反向/边界/异常 {negative} 条）",
+        f"（覆盖点击跳转/展示逻辑/UI展示/回归等核心场景 {core_count} 条，"
+        f"异常/边界场景 {exception_count} 条）",
     ]
     return "\n".join(lines)
 
@@ -471,6 +538,11 @@ def _render_analysis_graph_for_generation(graph: dict) -> str:
             graph.get("state_transitions", [])
         ),
         "test_strategy": _compact_test_strategy(graph.get("test_strategy", {})),
+        # 非空表示本次需求会影响这些既有页面/模块（"新增功能"场景），
+        # 生成器应结合 regression_section 里的知识库现状补充回归用例。
+        "regression_scope": [
+            str(item) for item in graph.get("regression_scope", []) if str(item).strip()
+        ],
     }
     return "确认版需求分析 JSON：\n" + json.dumps(
         payload,

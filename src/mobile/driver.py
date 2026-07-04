@@ -41,6 +41,33 @@ class AppiumDriverManager:
     def is_connected(self) -> bool:
         return self._driver is not None
 
+    async def probe_session_alive(self) -> bool:
+        """探测已持有的 Appium 会话在服务端是否仍然存活。
+
+        ``is_connected()`` 只判断本地是否持有 driver 引用，不代表服务端会话
+        没有过期——例如 ``newCommandTimeout``（默认 300 秒）到期、
+        Appium server 被重启或手动杀掉等场景下，本地引用仍然非空，
+        但服务端早已销毁会话，后续任何操作都会抛出
+        ``NoSuchDriverError: A session is either terminated or not started``。
+        这里用一次真实的网络往返（``get_window_size``，各平台都支持）主动探活；
+        探测到会话已死时清空本地引用，方便调用方（如 ``ExecutionWorkflow``）
+        判断需要重新 connect，而不是直接把陈旧的错误抛给用户。
+        """
+        if self._driver is None:
+            return False
+        driver = self._driver
+
+        def _probe():
+            driver.get_window_size()
+
+        try:
+            await asyncio.to_thread(_probe)
+            return True
+        except Exception:
+            logger.warning("appium_session_stale_detected")
+            self._driver = None
+            return False
+
     async def connect(
         self,
         server_url: str,

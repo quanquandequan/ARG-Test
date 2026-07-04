@@ -1,4 +1,4 @@
-"""使用 pypdf + pdfplumber 抽取表格的 PDF 文档 reader。"""
+"""使用 pypdf 抽取文本的 PDF 文档 reader。"""
 
 import uuid
 from pathlib import Path

@@ -82,18 +82,33 @@ _BUG_SOURCE_FILTER: dict = {"_raw": _BUG_BOOST_EXPR}
 # 用户 query 里含这些词时视为 bug 查询，激活 bug boost 路径
 _BUG_TRIGGER_WORDS = frozenset(["bug", "缺陷", "严重", "异常", "崩溃", "闪退", "故障"])
 
-# XMind boost：XMind 文件是功能规格/需求文档，数量少（每文件 2-43 chunk），
-# 普通召回中被 Excel 测试用例行（3000+）完全挤出 top-k，功能类查询返回空。
-# 对"功能/需求/特性"类查询，额外做一次只搜 xmind 的专属向量召回，
-# 并在候选池和最终选择阶段给 XMind 记录优先名额。
+# XMind boost：XMind 覆盖的是叭嗒 App 之外的小程序/插件等场景（如百度/抖音小程序、
+# 漫画插件阅读器），这类内容 Excel 测试用例基本不覆盖或已过时，数量也少
+# （每文件 2-43 chunk），普通召回中会被 Excel 测试用例行（3000+）完全挤出 top-k。
+# 仅当用户明确在问小程序/插件这类 XMind 独有场景时才激活，额外做一次只搜 xmind
+# 的专属向量召回，并在候选池和最终选择阶段给 XMind 记录优先名额；
+# 叭嗒 App 主体功能查询一律默认优先走 Excel（见下方普通分支），因为 Excel 是当前
+# 版本最全、逻辑最新的测试用例，其余来源可能是历史版本迭代遗留、已过时。
 _XMIND_BOOST_K = 60
 _XMIND_BOOST_EXPR = 'metadata["source_format"] == "xmind"'
 _XMIND_SOURCE_FILTER: dict = {"_raw": _XMIND_BOOST_EXPR}
-# 用户 query 里含这些词时视为功能/需求查询，激活 xmind boost 路径
-_XMIND_TRIGGER_WORDS = frozenset(["功能", "特性", "需求"])
+# 用户 query 里含这些词时视为小程序/插件类查询，激活 xmind boost 路径
+_XMIND_TRIGGER_WORDS = frozenset(["小程序", "插件"])
 
 # 对比类查询：需要同时从 XMind（规格）和 Excel（测试用例）各取一部分，不能独占全部槽位
 _COMPARISON_TRIGGER_WORDS = frozenset(["差异", "区别", "对比", "不同", "比较", "相比", "vs"])
+
+# Excel 最低保底名额：xmind_query_mode / bug_query_mode 下，若 boost 来源候选数
+# ≥ top_k，会把全部名额占满，导致"事实优先"（priority=0）的 Excel 测试用例
+# 即使命中也完全挤空（例如 query 里带"小程序""插件"会触发 xmind_query_mode，
+# 但同一功能在 Excel 里也可能有对应记录）。保底名额确保 Excel 命中时
+# 至少能展示一部分，同时 XMind/Bug 仍拿大多数名额，不影响其原有优先级。
+_MIN_EXCEL_FLOOR_RATIO = 4
+
+
+def _excel_slot_floor(top_k: int) -> int:
+    """xmind/bug boost 模式下给 Excel 预留的最低名额。"""
+    return max(2, top_k // _MIN_EXCEL_FLOOR_RATIO)
 
 
 def _is_bug_query(query: str) -> bool:
@@ -103,7 +118,7 @@ def _is_bug_query(query: str) -> bool:
 
 
 def _is_xmind_query(query: str) -> bool:
-    """判断是否为功能/需求类查询（应优先返回 XMind 规格文档）。"""
+    """判断是否为小程序/插件类查询（这类场景只有 XMind 覆盖，应优先返回 XMind）。"""
     return any(w in query for w in _XMIND_TRIGGER_WORDS)
 
 
@@ -596,11 +611,14 @@ def _select_source_aware_results(
 ) -> list[SearchResult]:
     """从 rerank 结果中选择最终展示项。
 
-    bug_query_mode=True  → bug 记录优先占槽，剩余给 Excel。
+    bug_query_mode=True  → bug 记录优先占槽，但为 Excel 保留最低名额，剩余给 Excel。
     xmind_query_mode=True AND comparison_mode=True
                          → XMind / Excel 各占一半槽位（对比查询双来源）。
-    xmind_query_mode=True → XMind 优先占槽，剩余给 Excel。
+    xmind_query_mode=True → XMind 优先占槽，但为 Excel 保留最低名额，剩余给 Excel。
     普通模式           → Excel 优先，剩余给 bug/xmind。
+
+    xmind/bug 优先占槽时会先扣除 Excel 的保底名额（见 `_excel_slot_floor`），
+    避免 boost 来源命中数量 ≥ top_k 时把"事实优先"的 Excel 完全挤空。
     """
     excel = _by_category(ranked, "excel_case")
     bug = _by_category(ranked, "bug")
@@ -609,7 +627,8 @@ def _select_source_aware_results(
 
     selected: list[SearchResult] = []
     if bug_query_mode:
-        selected.extend(bug[: max(top_k, 5)])
+        excel_floor = min(len(excel), _excel_slot_floor(top_k))
+        selected.extend(bug[: max(top_k - excel_floor, 0)])
         remaining = max(top_k - len(selected), 0)
         if remaining:
             selected.extend(excel[:remaining])
@@ -619,7 +638,8 @@ def _select_source_aware_results(
         selected.extend(xmind[:half])
         selected.extend(excel[:half])
     elif xmind_query_mode:
-        selected.extend(xmind[: max(top_k, 5)])
+        excel_floor = min(len(excel), _excel_slot_floor(top_k))
+        selected.extend(xmind[: max(top_k - excel_floor, 0)])
         remaining = max(top_k - len(selected), 0)
         if remaining:
             selected.extend(excel[:remaining])

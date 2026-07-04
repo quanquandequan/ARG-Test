@@ -20,6 +20,10 @@ from pathlib import Path
 
 from src.agent.base_tool import FINAL_ANSWER_PASSTHROUGH, BaseTool
 from src.agent.history import truncate_history
+from src.agent.requirement_flow import (
+    parse_cli_design_cases_payload,
+    parse_cli_final_payload,
+)
 from src.agent.tool_registry import ToolRegistry
 from src.agent.types import AgentResult, AgentStep, Citation
 from src.core.logging import get_logger
@@ -131,21 +135,44 @@ class ReActAgent:
                 "不要先调用 search_knowledge，也不要调用 analyze_requirement。"
             )
         if route == "execute_scenario":
-            return (
+            hint = (
                 "【工具路由提示】当前用户输入的是自动化用例 JSON 路径，"
                 "且目标是执行已有用例。此场景必须直接调用 execute_scenario，"
                 "不要调用 design_test_cases。"
             )
+            if _has_batch_qualifier(query):
+                hint += (
+                    "用户指令里包含数量/类型过滤等限定词（如「前N条」「跳过回归」），"
+                    "必须换算成 execute_scenario 的 max_cases（按 JSON 中用例声明顺序"
+                    "只跑前 N 条）和/或 exclude_types（要跳过的用例 type，例如"
+                    "['回归测试']）参数，在同一次调用里一起传入；如果用户明确列出了"
+                    "具体的用例 id，改用 case_ids 参数。不要为了跑多条用例而多次调用"
+                    "本工具——execute_scenario 一次调用后不会再进入下一轮。"
+                )
+            return hint
         return ""
 
     def _build_direct_tool_call(self, query: str) -> ToolCall | None:
         """对可明确识别的高频请求做硬路由，避免 LLM 选错工具。"""
+        cli_final = _build_cli_final_tool_call(query)
+        if cli_final is not None:
+            return cli_final
+
+        cli_design = _build_cli_design_cases_tool_call(query)
+        if cli_design is not None:
+            return cli_design
+
         route = _detect_json_route(query)
         path_match = re.search(r"(?:/|\./|\.\./)[^\s]+\.json", (query or "").strip())
         if route is None or path_match is None:
             return None
 
         if route == "execute_scenario":
+            # 带数量/类型过滤限定词（如"前6条""跳过回归"）时，硬路由只会透传
+            # 路径、无法表达这些约束，交给 LLM 通过 max_cases/exclude_types/
+            # case_ids 参数精确表达（route hint 已引导它这么做）。
+            if _has_batch_qualifier(query):
+                return None
             return ToolCall(
                 id=f"direct-execute-{uuid.uuid4()}",
                 name="execute_scenario",
@@ -521,6 +548,15 @@ class ReActAgent:
 _GENERATE_CASE_KEYWORDS = ("生成", "设计", "产出")
 _EXECUTE_CASE_KEYWORDS = ("执行", "运行", "回放", "跑")
 _AUTOMATION_CASE_KEYWORDS = ("自动化", "automation", "case")
+# 数量/类型过滤限定词：命中时说明用户想批量执行（前 N 条 / 跳过某类用例），
+# 这类约束无法用硬路由的"只透传路径"表达，需要交给 LLM 换算成
+# execute_scenario 的 max_cases/exclude_types/case_ids 参数。
+_BATCH_QUALIFIER_PATTERN = re.compile(r"\d+\s*条|回归|跳过|只(跑|执行|运行|测)")
+
+
+def _has_batch_qualifier(query: str) -> bool:
+    """检测用户指令中是否包含批量执行的数量/类型限定词。"""
+    return bool(_BATCH_QUALIFIER_PATTERN.search(query or ""))
 
 
 def _detect_json_route(text: str) -> str | None:
@@ -559,3 +595,51 @@ def _is_automation_case_request(text: str) -> bool:
     """判断当前请求是否明确指向自动化用例。"""
     lowered = text.lower()
     return any(keyword in text or keyword in lowered for keyword in _AUTOMATION_CASE_KEYWORDS)
+
+
+def _build_cli_final_tool_call(query: str) -> ToolCall | None:
+    """CLI 澄清完成后直達 analyze_requirement final，不经过 LLM 选工具。"""
+    payload = parse_cli_final_payload(query)
+    if payload is None:
+        return None
+    answers = str(payload.get("clarification_answers", "")).strip()
+    if not answers:
+        return None
+    arguments: dict[str, str] = {
+        "analysis_mode": "final",
+        "clarification_answers": answers,
+    }
+    for key in ("requirement", "requirement_file", "module", "output_dir"):
+        value = str(payload.get(key, "") or "").strip()
+        if value:
+            arguments[key] = value
+    return ToolCall(
+        id=f"direct-cli-final-{uuid.uuid4()}",
+        name="analyze_requirement",
+        arguments=arguments,
+    )
+
+
+def _build_cli_design_cases_tool_call(query: str) -> ToolCall | None:
+    """CLI 在 confirmed JSON 后直達 design_test_cases，不经过 LLM 选工具。"""
+    payload = parse_cli_design_cases_payload(query)
+    if payload is None:
+        return None
+    path = str(payload.get("analysis_json_path", "")).strip()
+    if not path:
+        return None
+    mode = str(payload.get("generation_mode", "manual")).strip().lower()
+    if mode not in {"manual", "automation"}:
+        mode = "manual"
+    arguments: dict[str, str] = {
+        "analysis_json_path": path,
+        "generation_mode": mode,
+    }
+    module = str(payload.get("module", "") or "").strip()
+    if module:
+        arguments["module"] = module
+    return ToolCall(
+        id=f"direct-cli-design-{uuid.uuid4()}",
+        name="design_test_cases",
+        arguments=arguments,
+    )

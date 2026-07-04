@@ -5,7 +5,7 @@ from __future__ import annotations
 from src.agent.base_tool import FINAL_ANSWER_PASSTHROUGH, BaseTool
 from src.agent.tool_result import ToolExecutionResult
 from src.core.logging import get_logger
-from src.domain.execution import ScenarioExecutionRequest
+from src.domain.execution import ScenarioBatchExecutionResult, ScenarioExecutionRequest
 from src.workflows.execution import ExecutionWorkflow
 
 logger = get_logger(__name__)
@@ -26,8 +26,12 @@ class ExecuteScenarioTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "执行已生成的自动化用例 JSON，并输出执行报告。"
-            "仅接受 automation_json_path 作为执行输入；不生成新用例。"
+            "执行已生成的自动化用例 JSON，并输出执行报告。不生成新用例。"
+            "默认只执行 case_id/case_title 指定的一条（都不填时默认第一条）。"
+            "需要一次跑多条时用批量参数：max_cases（按 JSON 声明顺序只跑前 N 条）、"
+            "exclude_types（跳过指定 type 的用例，如 ['回归测试']）、"
+            "case_ids（显式指定要跑哪些用例 id）。批量参数要在同一次调用里一起传，"
+            "不要多次调用本工具来跑多条用例。"
         )
 
     @property
@@ -41,11 +45,28 @@ class ExecuteScenarioTool(BaseTool):
                 },
                 "case_id": {
                     "type": "string",
-                    "description": "要执行的用例 ID（可选）",
+                    "description": "要执行的单条用例 ID（可选，与批量参数互斥）",
                 },
                 "case_title": {
                     "type": "string",
-                    "description": "要执行的用例标题（可选）",
+                    "description": "要执行的单条用例标题（可选，与批量参数互斥）",
+                },
+                "case_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "批量执行：显式指定要执行的用例 id 列表（可选）",
+                },
+                "max_cases": {
+                    "type": "integer",
+                    "description": (
+                        "批量执行：按 JSON 中用例声明顺序只执行前 N 条"
+                        "（先应用 exclude_types 过滤，再取前 N 条，可选）"
+                    ),
+                },
+                "exclude_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "批量执行：跳过指定 type 的用例，如 ['回归测试']（可选）",
                 },
                 "app_package": {
                     "type": "string",
@@ -66,6 +87,9 @@ class ExecuteScenarioTool(BaseTool):
         case_title: str = "",
         app_package: str = "",
         output_dir: str = "",
+        case_ids: list[str] | None = None,
+        max_cases: int | None = None,
+        exclude_types: list[str] | None = None,
         **kwargs,
     ) -> str:
         result = await self.execute_typed(
@@ -74,6 +98,9 @@ class ExecuteScenarioTool(BaseTool):
             case_title=case_title,
             app_package=app_package,
             output_dir=output_dir,
+            case_ids=case_ids,
+            max_cases=max_cases,
+            exclude_types=exclude_types,
             **kwargs,
         )
         return result.content
@@ -86,10 +113,19 @@ class ExecuteScenarioTool(BaseTool):
         app_package: str = "",
         output_dir: str = "",
         request_id: str = "",
+        case_ids: list[str] | None = None,
+        max_cases: int | None = None,
+        exclude_types: list[str] | None = None,
         **kwargs,
     ) -> ToolExecutionResult:
         if not automation_json_path.strip():
             return ToolExecutionResult(content="错误：请提供 automation_json_path。")
+
+        case_ids = case_ids or []
+        exclude_types = exclude_types or []
+        # 只要出现任一批量参数就走批量执行；未指定任何批量参数时沿用历史的
+        # 单条执行行为（case_id/case_title 都不填则默认执行 cases[0]）。
+        is_batch = bool(case_ids) or bool(exclude_types) or max_cases is not None
 
         try:
             import json
@@ -104,16 +140,22 @@ class ExecuteScenarioTool(BaseTool):
                     )
                 )
 
-            result = await self._workflow.execute(
-                ScenarioExecutionRequest(
-                    automation_json_path=automation_json_path,
-                    case_id=case_id,
-                    case_title=case_title,
-                    app_package=app_package,
-                    output_dir=output_dir,
-                    request_id=request_id,
-                )
+            request = ScenarioExecutionRequest(
+                automation_json_path=automation_json_path,
+                case_id=case_id,
+                case_title=case_title,
+                app_package=app_package,
+                output_dir=output_dir,
+                request_id=request_id,
+                case_ids=case_ids,
+                max_cases=max_cases,
+                exclude_types=exclude_types,
             )
+            if is_batch:
+                batch_result = await self._workflow.execute_batch(request)
+                return _format_batch_result(batch_result, request_id, output_dir)
+
+            result = await self._workflow.execute(request)
         except ValueError as exc:
             return ToolExecutionResult(content=f"执行失败：{exc}")
         except Exception:
@@ -154,6 +196,44 @@ class ExecuteScenarioTool(BaseTool):
                 "output_dir": output_dir.strip(),
             },
         )
+
+
+def _format_batch_result(
+    batch_result: ScenarioBatchExecutionResult,
+    request_id: str,
+    output_dir: str,
+) -> ToolExecutionResult:
+    """把批量执行结果整理成给用户看的摘要文本，每条用例失败不中断后续执行。"""
+    lines = [
+        f"批量执行完成：共 {len(batch_result.results)} 条，"
+        f"通过 {batch_result.pass_count} 条，失败 {batch_result.fail_count} 条",
+        f"模块：{batch_result.module}",
+    ]
+    if batch_result.skipped_case_ids:
+        skipped = ", ".join(batch_result.skipped_case_ids)
+        lines.append(f"未执行（按 exclude_types 跳过或 case_ids 未命中）：{skipped}")
+
+    artifacts = []
+    for r in batch_result.results:
+        status_mark = "✅" if r.status == "PASS" else "❌"
+        line = f"{status_mark} {r.case_id} - {r.title}"
+        if r.status != "PASS" and r.failure_reason:
+            line += f"\n   失败原因：{r.failure_reason}"
+        lines.append(line)
+        if r.report_artifact is not None:
+            artifacts.append(r.report_artifact)
+        if r.screenshot_artifact is not None:
+            artifacts.append(r.screenshot_artifact)
+
+    return ToolExecutionResult(
+        content="\n".join(lines),
+        data=batch_result,
+        artifacts=artifacts,
+        metadata={
+            "request_id": request_id,
+            "output_dir": output_dir.strip(),
+        },
+    )
 
 
 

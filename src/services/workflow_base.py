@@ -19,6 +19,9 @@ class WorkflowContext:
     module: str
     generation_mode: str
     kb_samples: str = ""
+    # 新增功能影响面：来自需求分析 regression_scope 的知识库现状检索结果，
+    # 用于让用例生成器为受影响的既有页面/模块补充回归验证用例。
+    regression_context: str = ""
     requirement_ir: RequirementIR | None = None
     test_points: list[TestPoint] = field(default_factory=list)
     scenarios: list[TestScenario] = field(default_factory=list)

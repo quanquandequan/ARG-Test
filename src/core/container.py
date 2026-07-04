@@ -8,17 +8,14 @@ from src.agent.tool_factory import build_agent_tools
 from src.core.config import get_config
 from src.core.prompt_loader import require_prompt_fields
 from src.embedding.factory import get_embedder
-from src.ingestion.chunker import ChineseChunker
 from src.ingestion.cleaner import TextCleaner
 from src.ingestion.loader import DocumentLoader
-from src.ingestion.pipeline import IngestionPipeline
 from src.llm.factory import get_llm
 from src.mobile.driver import AppiumDriverManager
 from src.retriever.dense_retriever import DenseRetriever
 from src.retriever.reranker_factory import get_reranker
 from src.retriever.retrieval_engine import RetrievalEngine
 from src.services.artifact_repository import LocalArtifactRepository
-from src.services.ingestion_service import DocumentIngestionService
 from src.services.page_cache import PageCache
 from src.vectordb.factory import get_vectordb
 from src.workflows.execution import ExecutionWorkflow
@@ -69,10 +66,6 @@ def _driver_manager(): return AppiumDriverManager()
 def _page_cache(): return PageCache()
 
 @lru_cache(maxsize=1)
-def get_ingestion_service():
-    return DocumentIngestionService(IngestionPipeline(_loader(), _cleaner(), ChineseChunker()), _vectordb(), _embedder())
-
-@lru_cache(maxsize=1)
 def get_test_case_generation_service():
     wf = TestCaseGenerationWorkflow.create_default(_loader(), _cleaner(), _retrieval_engine(), _artifacts(), _llm())
     return wf
@@ -112,7 +105,6 @@ def clear_all_caches():
     _this = sys.modules[__name__]
     for name in ("_llm", "_embedder", "_vectordb", "_reranker", "_retrieval_engine",
                  "_artifacts", "_loader", "_cleaner", "_driver_manager", "_page_cache",
-                 "get_ingestion_service",
                  "get_test_case_generation_service", "get_mobile_workflow", "get_agent"):
         fn = getattr(_this, name, None)
         if fn and hasattr(fn, "cache_clear"):

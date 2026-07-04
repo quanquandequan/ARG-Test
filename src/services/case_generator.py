@@ -53,6 +53,7 @@ class CaseGeneratorNode(WorkflowNode):
                 "json_repair_system_prompt",
                 "json_repair_user_template",
                 "kb_section_template",
+                "regression_section_template",
             ],
         )
         self._system_prompt = (
@@ -66,6 +67,7 @@ class CaseGeneratorNode(WorkflowNode):
         self._json_repair_system_prompt = prompt["json_repair_system_prompt"]
         self._json_repair_user_template = prompt["json_repair_user_template"]
         self._kb_section_template = prompt["kb_section_template"]
+        self._regression_section_template = prompt["regression_section_template"]
 
     async def execute(self, context: WorkflowContext) -> WorkflowContext:
         if context.generation_mode == "automation":
@@ -77,8 +79,16 @@ class CaseGeneratorNode(WorkflowNode):
             if context.kb_samples.strip()
             else ""
         )
+        regression_section = (
+            self._regression_section_template.format(
+                samples=context.regression_context.strip()
+            )
+            if context.regression_context.strip()
+            else ""
+        )
         user_content = self._user_template.format(
             kb_section=kb_section,
+            regression_section=regression_section,
             requirement=context.requirement_text.strip(),
             module=context.module,
             generation_mode=context.generation_mode,
@@ -145,6 +155,13 @@ class CaseGeneratorNode(WorkflowNode):
             if context.kb_samples.strip()
             else ""
         )
+        regression_section = (
+            self._regression_section_template.format(
+                samples=context.regression_context.strip()
+            )
+            if context.regression_context.strip()
+            else ""
+        )
         all_cases: list[dict] = []
         for batch_index, batch in enumerate(batches, start=1):
             feature_names = [
@@ -153,6 +170,7 @@ class CaseGeneratorNode(WorkflowNode):
             ]
             user_content = self._automation_batch_template.format(
                 kb_section=kb_section,
+                regression_section=regression_section,
                 requirement=_render_automation_batch_requirement(
                     context.requirement_text,
                     batch,
@@ -192,7 +210,17 @@ class CaseGeneratorNode(WorkflowNode):
                 raise ValueError(
                     f"LLM 未能生成有效的 UI 自动化用例，失败批次：{joined}。"
                 )
-            all_cases.extend(raw_cases)
+            # 代码层兜底：automation 只用于回归验证 UI 和核心功能，即使 prompt
+            # 约束失效导致模型仍输出异常场景用例，这里也要过滤掉，不依赖模型自觉。
+            filtered_cases = _exclude_exception_cases(raw_cases)
+            if not filtered_cases and raw_cases:
+                logger.info(
+                    "test_case_automation_exception_cases_dropped",
+                    module=context.module,
+                    batch=batch_index,
+                    dropped=len(raw_cases),
+                )
+            all_cases.extend(filtered_cases)
 
         return [_case_from_dict(case) for case in all_cases]
 
@@ -548,6 +576,25 @@ def _stringify_plain(value) -> str:
     return str(value).strip()
 
 
+_EXCEPTION_TYPE_MARKERS = ("异常", "exception")
+
+
+def _is_exception_case_type(case_type: str) -> bool:
+    """判断用例类型是否属于异常/边界场景。
+
+    testcase_design.py 的生成摘要展示会直接复用这个函数做统计，
+    必须保持唯一实现，否则展示的统计比例会和实际参与
+    automation 异常过滤的结果对不上。
+    """
+    lowered = str(case_type or "").strip().lower()
+    return any(marker in lowered for marker in _EXCEPTION_TYPE_MARKERS)
+
+
+def _exclude_exception_cases(cases: list[dict]) -> list[dict]:
+    """automation 模式代码层兜底：剔除异常/边界场景用例，只保留 UI 和核心功能回归。"""
+    return [case for case in cases if not _is_exception_case_type(case.get("type", ""))]
+
+
 def _extract_feature_payloads(requirement_text: str) -> list[dict]:
     marker = "确认版需求分析 JSON："
     text = requirement_text.split(marker, 1)[-1].strip()
@@ -577,6 +624,7 @@ def _render_automation_batch_requirement(
         "features": batch_features,
         "state_transitions": payload.get("state_transitions", []),
         "test_strategy": payload.get("test_strategy", {}),
+        "regression_scope": payload.get("regression_scope", []),
     }
     return "确认版需求分析 JSON：\n" + json.dumps(
         batch_payload,

@@ -7,14 +7,39 @@ system_prompt: |
   steps 和 expected 必须是普通文本，多步骤用 1、2、3 编号。
   automation 模式额外输出 data_setup/business_name/ui_display_name/page_route/locator_chain/anchor_text/search_strategy/expected_visibility/forbidden_locators/selectors/automation_steps/assertions。
 
+  ## 设计方法论（两种场景，按需求内容判断适用哪种）
+
+  ### 场景 A：完整页面
+  需求文档描述的是一个完整页面（而非在已有页面上新增局部功能）时，按以下顺序设计：
+  1. 页面入口：如何进入该页面（来源入口、跳转路径）——归入"点击跳转"类。
+  2. 页面整体：先写 1 条"整体页面展示"用例，只验证进入页面后的整体布局/信息是否完整展示，不细分到具体模块。
+  3. 逐模块设计，每个模块依次覆盖：
+     a. 展示逻辑：明确"在什么条件下，该模块展示成什么样式/内容"——同一模块可能因数据、状态、交互不同而展示不同 UI 变体，必须把每种条件拆成一条独立用例。
+     b. 每种 UI 变体：针对 a 中识别出的每种样式，单独写 1 条"UI 展示"用例，只验证该样式下具体的 UI 元素（文案、图片、角标、布局等）。
+     c. 点击/跳转：模块上所有可点击、可跳转的元素，逐个验证点击后的跳转目标或交互反馈。
+     d. 异常情况：网络异常、接口失败、字段缺失、空数据等边界场景。
+
+  ### 场景 B：新增功能（在已有页面上新增/迭代局部功能）
+  除了对新功能本身按场景 A 的 a/b/c/d 四步设计外，必须额外补充"影响面回归用例"：
+  - 新功能通常会挂载在某个已有页面/模块上（例如首页推荐里新增一个卡片、追更列表里新增一个入口）。
+  - 若下方提供了"知识库现状参考"（对应需求分析阶段识别出的 regression_scope 受影响范围），必须针对每个受影响范围至少生成 1 条回归用例，验证新功能上线后，该范围的既有逻辑仍然符合参考资料描述的现状，不得被新功能破坏或覆盖。
+  - 回归用例的 precondition/steps 必须结合参考资料中的具体现有逻辑描述，不能只写"验证不受影响"这类空泛表述。
+  - 若需求文档判断不清是新增功能还是完整页面，但提供了知识库现状参考，也按场景 B 处理。
+
+  ## 优先级规则（必须严格按用例类别赋值，不得按功能重要性主观打分）
+  - **P1｜点击跳转**：页面入口跳转、模块内可点击元素的跳转/交互反馈验证。
+  - **P2｜展示逻辑**：因数据/状态/交互差异导致模块展示不同 UI 样式的判断逻辑验证（即上方 a 类用例）。
+  - **P3｜UI 展示 与 异常情况**：整体页面展示用例、每种 UI 变体的具体元素展示验证（上方 b 类用例）、以及所有异常/边界场景（上方 d 类用例）、影响面回归用例中的 UI 展示部分。
+  用例的 type 字段需能体现类别：点击跳转类写"交互测试"，展示逻辑类写"功能测试"，UI 展示类写"UI测试"，异常场景写"异常测试"，回归用例写"回归测试"。
+
 user_template: |
-  {kb_section}需求文档内容：
+  {kb_section}{regression_section}需求文档内容：
   {requirement}
 
   模块名称：{module}
   生成模式：{generation_mode}
 
-  请为上述需求生成完整的测试用例，输出 JSON 数组。
+  请严格按 system_prompt 中的设计方法论和优先级规则，为上述需求生成完整的测试用例，输出 JSON 数组。
 
 automation_requirements: |
 
@@ -26,9 +51,46 @@ automation_requirements: |
   - page_route 必须写成可执行导航路径。
   - locator_chain 必须使用组合定位。
   - search_strategy 必须包含滚动方向、最大滚动次数、停止条件。
-  - 存在展示态/空态/隐藏态的数据规则时，必须拆成多条用例。
-  - 优先覆盖模块展示、星期切换、作品点击跳转、加追、追番表入口、
-    空态/异常态等 UI 主流程。
+  - 存在展示态/隐藏态等正常业务条件下的数据规则时，必须拆成多条用例。
+  - **禁止把箭头/图标等非文字符号拼进 text/target 断言或定位里**：需求文档中
+    "文案 + 箭头图标"的描述（如"追番表"文案及箭头），箭头通常是独立的图标或
+    复合 drawable，不会出现在元素的 text 属性里；assert_text/tap 的 target
+    只能写文案本身（如"追番表"），不要自行拼接" >"" ›"等符号，否则会因为
+    真实 UI 文本不包含该符号而断言失败或定位不到元素。
+  - **点击 RecyclerView/列表中重复出现的封面图/缩略图时，禁止只用
+    `target_type: "class"` + `target: "android.widget.ImageView"` + `index: 0`
+    这种笼统写法去定位**：同一页面上（尤其是列表项上方还有其它推荐位/
+    广告图）会存在大量 ImageView，`index` 是按整页文档顺序数的第 N 个，
+    几乎必然点到与预期作品无关的图片，导致"点了但没有任何反应"却不报错。
+    如果 selectors/知识库样本里能拿到该封面控件的具体 resource-id，必须改用
+    `target_type: "id"` + 具体 id + `index`（若同一 id 在页面上重复出现，
+    `index` 表示"第几个作品"，如 0 = 列表第一项）；实在拿不到 resource-id
+    时才允许退化为 class 通配，并在 notes 中说明该定位可能不够精确。
+  - **`assert_page` 的 `page` 字段必须是能够作为子串匹配到真实 Activity
+    类名/包名的英文标识符**（如 "PlayerActivity"、"ChasePageActivity"），
+    **禁止直接填中文业务页面名称**（如"播放详情页"）——中文词永远不可能
+    出现在英文 Activity 类名里，这类断言必然失败。如果不确定跳转目标的
+    具体 Activity 名称（例如点击封面后可能落地到一个未知的播放页，也可能
+    是叠加在同一 Activity 上的半屏浮层），改用 `assert_not_page` 只验证
+    "已经离开当前页面"（`page` 填当前页面的 Activity 关键字），或者改用
+    `assert_text`/`assert_element` 断言目标页面上应该出现的具体文案/元素。
+  - **"加追/关注/收藏"这类图标+文字合并渲染的按钮，实测常见做法是把整个按钮
+    做成一个纯 `ImageView`**（图标和文案一起画进同一张位图里），点击前后
+    text/content-desc/checked/selected 等无障碍属性完全不变、也不会弹 toast，
+    即使肉眼截图能看到文案从"加追"变成"已加追"，UIAutomator 也拿不到任何
+    可区分的信号。遇到这类按钮：定位必须用 `target_type: "id"` + 具体
+    resource-id（+ 需要区分第几项时用 index），**禁止用 `target_type: "text"`
+    去定位**（无障碍树里根本没有这个文字，重试多少次都找不到）；断言也
+    **禁止用 `assert_text` 断言点击后的文案变化**（同样的原因，必然失败），
+    应改为验证点击后页面仍停留在原页面（`assert_page`，确认没有异常跳转/
+    崩溃）或该按钮元素依然存在（`assert_element`），并在 notes 中注明
+    "按钮点击后的视觉状态变化需人工核实截图，当前自动化框架无法通过
+    无障碍树验证"。
+  - 优先覆盖模块展示、星期切换、作品点击跳转、加追、追番表入口等 UI 主流程
+    和"影响面回归用例"中的核心功能/UI 部分。
+  - **不要生成异常场景用例**：automation 只用于回归验证核心功能和 UI 展示，
+    网络异常、接口失败、字段缺失、空态兜底等异常/边界场景一律不生成
+    （这类场景交由人工用例覆盖）。
   - 不要生成接口请求校验、埋点上报校验、后台配置校验类用例。
   - 当 locator_chain 或 selectors 已给出稳定 resource-id 时，automation_steps 必须优先使用
     `target_type: "id"`，不要退化成仅靠业务文案点击。
@@ -40,7 +102,7 @@ automation_requirements: |
   - device_tool.action 只允许：connect / disconnect / list_devices / list_packages / launch_app / install_app
   - screen_tool.action 只允许：get_current_screen / get_screenshot / get_ui_tree
   - action_tool.action 只允许：tap / long_press / input_text / clear_text / swipe / scroll / back / home
-  - assertion.action 只允许：assert_text / assert_not_text / assert_element / assert_clickable / assert_page / assert_checked
+  - assertion.action 只允许：assert_text / assert_not_text / assert_element / assert_clickable / assert_page / assert_not_page / assert_checked
   - action_tool.target_type 只允许：text / id / desc / class
 
   ## 严禁输出以下历史别名或未实现能力
@@ -72,14 +134,15 @@ automation_requirements: |
   ]
 
 automation_batch_template: |
-  {kb_section}需求文档内容：
+  {kb_section}{regression_section}需求文档内容：
   {requirement}
 
   模块名称：{module}
   生成模式：automation
 
   请只为上方需求文档中的功能点生成移动端 UI 自动化用例，输出 JSON 数组。
-  每个功能点生成 1-3 条用例，优先覆盖可被 UI 自动化执行的主流程和关键边界。
+  每个功能点生成 1-3 条用例，优先覆盖可被 UI 自动化执行的主流程和关键边界，
+  不生成异常场景用例。
 
 json_repair_system_prompt: |
   你是 JSON 修复助手。请把用户提供的内容修复为合法 JSON 数组。
@@ -96,6 +159,15 @@ json_repair_user_template: |
 kb_section_template: |
   以下是知识库中现有的测试用例样本，请参考其描述风格、粒度和术语。
   注意：样本不是本次需求的事实来源，不要复制样本里的业务规则或前置条件。
+
+  {samples}
+
+  ---
+
+regression_section_template: |
+  以下是知识库中"受影响范围"的现状参考（用于场景 B 的影响面回归用例）。
+  注意：这些内容是新功能上线前的既有逻辑现状，不是本次新功能的需求来源；
+  只用于生成验证既有逻辑未被破坏的回归用例。
 
   {samples}
 

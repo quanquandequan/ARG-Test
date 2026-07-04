@@ -92,6 +92,10 @@ class ActionTool(BaseTool):
         "required": ["action"],
     }
 
+    # `_settle_module` 判断"骑线元素是否属于锚点自身模块"时的高度预算，
+    # 以屏幕高度的比例表示；超出该范围的骑线内容视为下一个模块，不纳入判断。
+    _MODULE_HEIGHT_RATIO = 0.35
+
     def __init__(
         self,
         driver_manager: AppiumDriverManager,
@@ -134,6 +138,17 @@ class ActionTool(BaseTool):
 
     # ── 操作实现 ─────────────────────────────────────────────────────────────
 
+    # 目标元素首次未命中时的重试次数与间隔：应对"关注/加追"这类按钮状态
+    # 需要额外接口返回后才完成渲染的场景——页面标题/卡片本身已经出现在
+    # 无障碍树里，但按钮文字可能还要再等一两帧才会被写入，直接判定"未找到"
+    # 会造成偶发性的误报失败。
+    _LOOKUP_RETRY_ATTEMPTS = 2
+    _LOOKUP_RETRY_INTERVAL_S = 0.5
+
+    # swipe 底层调用失败（如 UiAutomator2 偶发 INJECT_EVENTS 权限异常）时的重试次数与间隔
+    _SWIPE_RETRY_ATTEMPTS = 1
+    _SWIPE_RETRY_INTERVAL_S = 0.5
+
     async def _resolve_coords(
         self,
         target: str = "",
@@ -142,15 +157,33 @@ class ActionTool(BaseTool):
         y: float | None = None,
         index: int = 0,
     ) -> tuple[int, int] | None:
-        """解析元素坐标；未找到时返回 None。"""
+        """解析元素坐标；未找到时返回 None。
+
+        找到目标元素后，如果它被检测到的底部悬浮层（如常驻 Tab 导航栏）
+        部分或整体遮挡，会先小幅继续向下滚动把目标"顶"出遮挡区域再返回坐标。
+        这类场景常见于：滚动的停止条件只判断了模块标题可见，但模块内部
+        贴近屏幕底部的卡片/按钮仍被底部导航栏盖住一部分，直接按解析出的
+        坐标点击容易点空或误触导航栏。
+        """
         if target:
-            parsed = await self._mgr.get_parsed_screen()
-            element = self._find_target_element(
-                parsed,
-                target=target,
-                target_type=target_type,
-                index=index,
-            )
+            element = None
+            for attempt in range(self._LOOKUP_RETRY_ATTEMPTS + 1):
+                parsed = await self._mgr.get_parsed_screen()
+                element = self._find_target_element(
+                    parsed,
+                    target=target,
+                    target_type=target_type,
+                    index=index,
+                )
+                if element is not None or attempt == self._LOOKUP_RETRY_ATTEMPTS:
+                    break
+                await asyncio.sleep(self._LOOKUP_RETRY_INTERVAL_S)
+            if element is not None and parsed.is_occluded(element):
+                nudged = await self._nudge_into_view(
+                    target=target, target_type=target_type, index=index,
+                )
+                if nudged is not None:
+                    element = nudged
             if element is not None:
                 return element.center
 
@@ -158,6 +191,37 @@ class ActionTool(BaseTool):
             return int(x), int(y)
 
         return None
+
+    async def _nudge_into_view(
+        self,
+        target: str,
+        target_type: str,
+        index: int,
+        max_nudges: int = 3,
+    ) -> UIElement | None:
+        """当目标元素被底部悬浮层部分遮挡时，小幅继续滚动直到清出遮挡区域。
+
+        只在探测到遮挡时才触发，正常场景零开销；每次只滑动一小段距离
+        （屏幕高度的 15%），避免因为单次滑动过量把目标重新滑出屏幕上方，
+        或滑过头触发下一屏内容加载。
+        """
+        w, h = await self._get_screen_size()
+        nudge_distance = max(1, int(h * 0.15))
+        element = None
+        for _ in range(max_nudges):
+            swipe_result = await self._perform_single_swipe(
+                direction="down", distance=nudge_distance, duration_ms=400
+            )
+            if swipe_result.startswith("swipe 失败") or swipe_result.startswith("未知滑动方向"):
+                return element
+            self._cache.invalidate()
+            parsed = await self._mgr.get_parsed_screen()
+            element = self._find_target_element(
+                parsed, target=target, target_type=target_type, index=index
+            )
+            if element is not None and not parsed.is_occluded(element):
+                return element
+        return element
 
     def _find_target_element(
         self,
@@ -171,7 +235,9 @@ class ActionTool(BaseTool):
         normalized_target = target.strip()
 
         if normalized_type == "id":
-            element = parsed.find_by_resource_id(normalized_target)
+            # 支持 index：同一 resource-id 常见于 RecyclerView 里重复出现的卡片
+            # 组件（如每张卡片自己的封面控件），不能永远只取第一个匹配。
+            element = parsed.find_by_resource_id(normalized_target, index=index)
             return element if element and element.is_visible else None
 
         if normalized_type == "desc":
@@ -338,6 +404,11 @@ class ActionTool(BaseTool):
 
         使用屏幕比例坐标（3/4 → 1/4）而非固定像素，
         兼容不同分辨率设备并避免被顶部 banner 拦截触摸事件。
+
+        ``distance`` 为 None 时使用默认比例（纵向 1/2 屏高、横向屏宽减安全
+        边距），起点固定不变，只收缩终点——这样传入更小的 distance 可以做
+        "微调"式的小幅滑动（例如 ``_nudge_into_view`` 用它清除底部悬浮层遮挡），
+        而不会改变默认滑动的既有行为。
         """
         w, h = await self._get_screen_size()
         margin_x = int(w * _SWIPE_MARGIN)
@@ -349,26 +420,42 @@ class ActionTool(BaseTool):
         # down = 向下浏览（手指上滑）：从 3/4 处滑到 1/4 处
         # up   = 向上浏览（手指下滑）：从 1/4 处滑到 3/4 处
         if direction == "down":
+            span = distance if distance is not None else int(h * 0.5)
+            span = max(1, min(span, int(h * 0.5)))
             sx, sy = mid_x, int(h * 0.75)
-            ex, ey = mid_x, int(h * 0.25)
+            ex, ey = mid_x, sy - span
         elif direction == "up":
+            span = distance if distance is not None else int(h * 0.5)
+            span = max(1, min(span, int(h * 0.5)))
             sx, sy = mid_x, int(h * 0.25)
-            ex, ey = mid_x, int(h * 0.75)
+            ex, ey = mid_x, sy + span
         elif direction == "left":
+            span = distance if distance is not None else (w - 2 * margin_x)
+            span = max(1, min(span, w - 2 * margin_x))
             sx, sy = margin_x, h // 2
-            ex, ey = w - margin_x, h // 2
+            ex, ey = margin_x + span, h // 2
         elif direction == "right":
+            span = distance if distance is not None else (w - 2 * margin_x)
+            span = max(1, min(span, w - 2 * margin_x))
             sx, sy = w - margin_x, h // 2
-            ex, ey = margin_x, h // 2
+            ex, ey = w - margin_x - span, h // 2
         else:
             return f"未知滑动方向：{direction}。支持：up / down / left / right"
 
-        dist = abs(ey - sy)
-        try:
-            await self._mgr.swipe(sx, sy, ex, ey, duration_ms)
-            return f"已向 {direction} 滑动 {dist}px。"
-        except Exception as e:
-            return f"swipe 失败：{e}"
+        dist = abs(ey - sy) if direction in ("down", "up") else abs(ex - sx)
+        # UiAutomator2 底层偶发 INJECT_EVENTS 权限异常（设备/环境层面的瞬时抖动，
+        # 并非手势参数错误），一次性失败没必要直接判定整条 case 失败，做一次
+        # 短暂重试通常就能恢复；仍失败才把原始异常信息透出。
+        last_error: Exception | None = None
+        for attempt in range(self._SWIPE_RETRY_ATTEMPTS + 1):
+            try:
+                await self._mgr.swipe(sx, sy, ex, ey, duration_ms)
+                return f"已向 {direction} 滑动 {dist}px。"
+            except Exception as e:
+                last_error = e
+                if attempt < self._SWIPE_RETRY_ATTEMPTS:
+                    await asyncio.sleep(self._SWIPE_RETRY_INTERVAL_S)
+        return f"swipe 失败：{last_error}"
 
     async def _scroll_until_condition(
         self,
@@ -378,11 +465,39 @@ class ActionTool(BaseTool):
         max_swipes: int | None,
         stop_condition: str,
     ) -> str:
-        """滚动直到满足停止条件；最多滑动 10 次，避免陷入循环。"""
+        """滚动直到满足停止条件；最多滑动 10 次，避免陷入循环。
+
+        命中停止条件（通常是模块标题文字）后，不会立即返回：模块标题先滚入
+        可视区、但模块本体（卡片列表、按钮等）仍有一部分压在底部悬浮层
+        （如常驻 Tab 导航栏）下面是很常见的情况——继续调用 ``_settle_module``
+        做几次小幅微调，直到锚点下方的内容清出遮挡区域，避免后续断言/截图/
+        点击看到的是不完整的模块。
+
+        踩过的坑：紧跟在 `back`/`tap` 跳转这类会触发 Activity 切换动画的操作
+        之后立即调用 scroll 时，第一次检查（``attempt == 0``，滑动前）很容易
+        因为转场动画/列表布局还没完全稳定而误判"目标不可见"，进而按剧本
+        做若干次"继续往下浏览"的滑动——如果此时目标其实已经正常展示在屏幕
+        上，这些滑动就是纯粹的误伤，会把原本已经就位的模块滑到很远的地方，
+        且这个方向的滑动无法在同一次调用里自我纠正。所以只在第一次检查上
+        做几次短暂重试（``_LOOKUP_RETRY_ATTEMPTS``/``_LOOKUP_RETRY_INTERVAL_S``，
+        与 tap 目标查找共用同一套重试参数），确认转场动画/渲染已经稳定之后
+        再决定是否真的需要滑动，避免"没滑之前先冤枉它一下"。
+        """
         swipes = max(1, min(int(max_swipes or 1), 10))
         for attempt in range(swipes + 1):
-            if await self._matches_stop_condition(stop_condition):
-                return f"已满足停止条件：{stop_condition}。共滑动 {attempt} 次。"
+            anchor = await self._find_stop_condition_element(stop_condition)
+            if anchor is None and attempt == 0:
+                for _ in range(self._LOOKUP_RETRY_ATTEMPTS):
+                    await asyncio.sleep(self._LOOKUP_RETRY_INTERVAL_S)
+                    anchor = await self._find_stop_condition_element(stop_condition)
+                    if anchor is not None:
+                        break
+            if anchor is not None:
+                settle_nudges = await self._settle_module(anchor, direction, duration_ms)
+                total = attempt + settle_nudges
+                detail = f"已满足停止条件：{stop_condition}。共滑动 {total} 次"
+                detail += f"（含微调 {settle_nudges} 次）。" if settle_nudges else "。"
+                return detail
             if attempt == swipes:
                 break
             swipe_result = await self._perform_single_swipe(
@@ -395,18 +510,91 @@ class ActionTool(BaseTool):
 
         return f"滑动 {swipes} 次后仍未满足停止条件：{stop_condition}。"
 
-    async def _matches_stop_condition(self, stop_condition: str) -> bool:
-        """支持 text=... 形式的可见文本停止条件。"""
+    async def _find_stop_condition_element(self, stop_condition: str) -> UIElement | None:
+        """解析 ``text=...`` 或纯文本形式的停止条件，返回命中的可见元素。"""
         condition = stop_condition.strip()
+        if not condition:
+            return None
+        target = (
+            condition.split("=", 1)[1].strip().strip("\"'")
+            if condition.startswith("text=")
+            else condition
+        )
+        if not target:
+            return None
         parsed = await self._mgr.get_parsed_screen()
-        if condition.startswith("text="):
-            target = condition.split("=", 1)[1].strip().strip("\"'")
-            element = parsed.find_by_text(target)
-            return element is not None and element.is_visible
-        if condition:
-            element = parsed.find_by_text(condition)
-            return element is not None and element.is_visible
-        return False
+        element = parsed.find_by_text(target)
+        return element if element is not None and element.is_visible else None
+
+    async def _settle_module(
+        self,
+        anchor: UIElement,
+        direction: str,
+        duration_ms: int,
+        max_nudges: int = 4,
+    ) -> int:
+        """锚点命中后，若锚点自身模块的内容仍被底部悬浮层遮挡，做精确的一次性补偿滚动。
+
+        只在探测到遮挡时才触发，正常场景零开销。返回实际执行的微调滑动次数，
+        供调用方如实计入返回文案（避免这部分滚动完全"隐身"，此前曾出现日志
+        显示"共滑动 0 次"、背后却偷偷多滑了好几屏的情况，导致问题难以排查）。
+
+        踩过的坑：在可以无限下拉的长列表页面（RecyclerView）里，"锚点下方是否
+        还有内容骑跨在遮挡边界上"这个条件几乎永远为真——因为只要页面还能继续
+        往下滚，就总会有下一张完全不相关的卡片正在滑入视野、贴着边界线，而不是
+        锚点自己模块的内容被切了一半。如果不加区分地反复检测、反复微调，会导致
+        "越滑越远、永不收敛"，多个 case 连续执行时把目标模块连同锚点标题本身
+        一起滑出屏幕（曾经在批量执行中把 003~006 全部拖垮的根因）。
+
+        修复方式：
+          1. 只认定"属于锚点自身模块"的骑线元素——限定在锚点往下
+             ``_MODULE_HEIGHT_RATIO``（屏幕高度的一个比例）范围内，超出此范围
+             视为下一个模块，不计入判断。
+          2. 按骑线元素实际重叠量精确计算滑动距离（+ 少量安全余量），
+             而不是固定滑动屏幕高度的某个百分比再反复试探。
+          3. ``max_nudges`` 只作为兜底安全阀（防止计算误差导致一次没清除干净），
+             不再是常态会被跑满的主循环。
+
+        踩过的坑（二）：卡片内部往往是"封面图 + 标题/副标题 + 按钮"纵向堆叠的
+        多层结构。第一次检测到的骑线元素可能只是封面图，按封面图的重叠量算出
+        的距离刚好能把封面图滑出遮挡区，但紧随其后的标题/按钮此时又刚好顶上
+        边界线、变成新的骑线元素，需要再来一次才能把按钮也滑出来。所以
+        ``max_nudges`` 不能压得太低（之前设过 2，实测某些三层卡片两次不够、
+        "加追"按钮始终留在遮挡区里）；由于范围已经被 ``_MODULE_HEIGHT_RATIO``
+        限定在锚点自身模块内、且一旦检测不到骑线元素就会立即提前返回，多给
+        几次机会不会引入"越滑越远"的旧问题，只会让同一张卡片的多层结构被
+        完整地滑出遮挡区。
+        """
+        if not anchor.text:
+            return 0
+        nudges_done = 0
+        for _ in range(max_nudges):
+            parsed = await self._mgr.get_parsed_screen()
+            current = parsed.find_by_text(anchor.text)
+            if current is None:
+                return nudges_done
+            boundary = parsed.bottom_overlay_top()
+            if boundary is None:
+                return nudges_done
+            _, screen_height = await self._get_screen_size()
+            module_budget = int(screen_height * self._MODULE_HEIGHT_RATIO)
+            straddling = [
+                el
+                for el in parsed.visible_elements()
+                if current.bounds[1] <= el.bounds[1] < boundary <= el.bounds[3]
+                and el.bounds[1] - current.bounds[1] <= module_budget
+            ]
+            if not straddling:
+                return nudges_done
+            overhang = max(el.bounds[3] - boundary for el in straddling)
+            nudge_distance = overhang + max(60, int(screen_height * 0.03))
+            await self._perform_single_swipe(
+                direction=direction,
+                distance=nudge_distance,
+                duration_ms=duration_ms,
+            )
+            nudges_done += 1
+        return nudges_done
 
     async def _back(self) -> str:
         try:

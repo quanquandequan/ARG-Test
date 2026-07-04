@@ -92,19 +92,34 @@ class ParsedScreen:
         return labels
 
     def find_by_text(self, text: str, exact: bool = False) -> UIElement | None:
+        """按文字查找元素；优先精确匹配，避免短文本被误配到无关的更长文案。
+
+        踩过的坑：星期切换栏的日期缩写（"一""二"等）都是单字，若直接走
+        子串包含匹配，页面上任何包含该字符的无关文案（例如"换一批"刷新
+        按钮里恰好带"一"字）都可能因为在元素列表中排在真正目标之前而被
+        误命中，导致点击了完全不相关的按钮却没有任何报错。因此即使
+        ``exact=False``（默认的"模糊匹配"模式），也应该先扫描一遍寻找
+        完全相等的元素，找不到时才退化为子串包含匹配。
+        """
         for el in self.elements:
-            if exact:
-                if el.text == text or el.content_desc == text:
-                    return el
-            else:
-                if text in el.text or text in el.content_desc:
-                    return el
+            if el.text == text or el.content_desc == text:
+                return el
+        if exact:
+            return None
+        for el in self.elements:
+            if text in el.text or text in el.content_desc:
+                return el
         return None
 
-    def find_by_resource_id(self, resource_id: str) -> UIElement | None:
-        for el in self.elements:
-            if el.resource_id == resource_id or el.resource_id.endswith(resource_id):
-                return el
+    def find_by_resource_id(self, resource_id: str, index: int = 0) -> UIElement | None:
+        """按 resource-id 查找第 index 个匹配元素（如 RecyclerView 中同 id 的多个卡片）。"""
+        candidates = [
+            el
+            for el in self.elements
+            if el.resource_id == resource_id or el.resource_id.endswith(resource_id)
+        ]
+        if 0 <= index < len(candidates):
+            return candidates[index]
         return None
 
     def find_by_class_name(
@@ -131,6 +146,65 @@ class ParsedScreen:
             "clickable_count": len(self.clickable_elements()),
             "elements": [e.to_dict() for e in visible],
         }
+
+    def bottom_overlay_elements(self) -> list[UIElement]:
+        """启发式识别常驻在屏幕底部的悬浮控件本身（如底部 Tab 导航栏）。
+
+        很多 App 的底部导航栏是独立于内容滚动区域的固定悬浮层：内容区域向上
+        滚动后，紧贴屏幕底部的卡片/列表项可能仍有一部分被这类悬浮层遮挡，
+        但 UIAutomator2 汇报的 bounds 只是布局坐标，并不反映视觉遮挡关系
+        （元素在遮挡层下方依然会被判定为 ``is_visible``）。
+
+        这里的启发式：紧贴当前已知最大 y2（近似屏幕高度）、横向跨度接近全屏
+        宽度、且自身高度不算太大的容器类元素，视为候选悬浮层。返回悬浮层
+        元素本身（而不只是边界坐标），供 ``is_occluded`` 把悬浮层自身从
+        "是否被遮挡"的判断中排除——否则悬浮层会被判定为"被自己遮挡"，
+        导致依赖遮挡检测收敛的微调滚动永远无法结束。
+        """
+        visible = self.visible_elements()
+        if not visible:
+            return []
+        max_bottom = max(el.bounds[3] for el in visible)
+        max_width = max(el.bounds[2] for el in visible)
+        if max_bottom <= 0 or max_width <= 0:
+            return []
+
+        overlays: list[UIElement] = []
+        for el in visible:
+            x1, y1, x2, y2 = el.bounds
+            width = x2 - x1
+            height = y2 - y1
+            touches_bottom = y2 >= max_bottom - 4
+            wide_enough = width >= max_width * 0.6
+            reasonable_height = 0 < height <= max_bottom * 0.25
+            # 要求候选上方确实存在其他内容（另一元素完全位于候选顶部之上），
+            # 避免页面元素很少、候选恰好是唯一/最靠下元素时被误判为悬浮层。
+            has_content_above = any(
+                other is not el and other.bounds[3] <= y1 for other in visible
+            )
+            if touches_bottom and wide_enough and reasonable_height and has_content_above:
+                overlays.append(el)
+        return overlays
+
+    def bottom_overlay_top(self) -> int | None:
+        """检测到的底部悬浮层中，最靠上的 top 坐标（"遮挡边界"）。"""
+        overlays = self.bottom_overlay_elements()
+        return min(el.bounds[1] for el in overlays) if overlays else None
+
+    def is_occluded(self, element: UIElement) -> bool:
+        """判断某元素是否与检测到的底部悬浮层存在重叠（可能被遮挡）。
+
+        只要元素底边落在遮挡边界及以下（部分被遮挡或整体已滑到遮挡层下方），
+        就认为存在遮挡风险——用 tap 解析出的坐标可能实际点在悬浮层上。
+        悬浮层元素自身会被排除，不会被判定为"被自己遮挡"。
+        """
+        overlays = self.bottom_overlay_elements()
+        if any(el is element for el in overlays):
+            return False
+        boundary = min((el.bounds[1] for el in overlays), default=None)
+        if boundary is None:
+            return False
+        return element.bounds[3] > boundary
 
     def has_meaningful_content(self, min_text_elements: int = 1) -> bool:
         """当 XML 树信息足够丰富、可跳过 VLM 兜底时返回 True。
